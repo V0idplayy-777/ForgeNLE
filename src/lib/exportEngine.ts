@@ -25,6 +25,7 @@ export async function exportProject(tracks: Track[], mediaAssets: MediaAsset[], 
   const ctx = canvas.getContext("2d", { alpha: false })!;
 
   const audioCtx = new AudioContext();
+  await audioCtx.resume();
   const dest = audioCtx.createMediaStreamDestination();
   const cleanupEls: HTMLElement[] = [];
 
@@ -52,7 +53,7 @@ export async function exportProject(tracks: Track[], mediaAssets: MediaAsset[], 
       el.src = asset.url;
       el.playsInline = true;
       el.crossOrigin = "anonymous";
-      el.muted = true;
+      el.muted = false;
       el.style.position = "fixed";
       el.style.left = "-9999px";
       document.body.appendChild(el);
