@@ -13,6 +13,7 @@ const SHORTCUTS: [string, string][] = [
   ["Shift + ← / →", "Nudge playhead 5s"],
   ["+ / -", "Zoom timeline in/out"],
   ["Esc", "Deselect clip"],
+  ["🏳‍🌈", "GAY"],
 ];
 
 export default function TopBar({ onExport }: { onExport: () => void }) {
