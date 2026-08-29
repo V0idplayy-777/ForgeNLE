@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useEditorStore, newTextClipDefaults } from "../store/useEditorStore";
-import { Undo2, Redo2, Type, FilePlus2, Download, Clapperboard, Keyboard } from "lucide-react";
+import { Undo2, Redo2, Type, FilePlus2, Download, Clapperboard, Keyboard, Accessibility } from "lucide-react";
 
 const SHORTCUTS: [string, string][] = [
   ["Space", "Play / Pause"],
@@ -16,7 +16,7 @@ const SHORTCUTS: [string, string][] = [
   ["🏳‍🌈", "GAY"],
 ];
 
-export default function TopBar({ onExport }: { onExport: () => void }) {
+export default function TopBar({ onExport, onAccessibility }: { onExport: () => void; onAccessibility: () => void }) {
   const projectName = useEditorStore((s) => s.projectName);
   const setProjectName = useEditorStore((s) => s.setProjectName);
   const undo = useEditorStore((s) => s.undo);
