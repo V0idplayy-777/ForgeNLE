@@ -26,8 +26,10 @@ export function useKeyboardShortcuts() {
 
       if (e.code === "Space") {
         e.preventDefault();
-        applyRate(0);
-        s.togglePlay();
+        const s2 = useEditorStore.getState();
+        rateRef.current = 0;
+        s2.setShuttleRate(0);
+        s2.togglePlay();
       } else if (e.key === "Delete" || e.key === "Backspace") {
         if (s.selectedClipId) {
           e.preventDefault();
