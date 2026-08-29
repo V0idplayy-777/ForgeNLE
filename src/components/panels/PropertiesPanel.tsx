@@ -1,5 +1,5 @@
 import { useEditorStore } from "../../store/useEditorStore";
-import { defaultEffects, defaultTextStyle } from "../../types";
+import { defaultEffects, defaultTextStyle, TransitionType } from "../../types";
 import { formatTimecode } from "../../lib/utils";
 import { AlignCenter, AlignLeft, AlignRight, Bold, Italic, RotateCcw, Sliders } from "lucide-react";
 
@@ -126,6 +126,52 @@ export default function PropertiesPanel() {
         <Slider label="Volume" value={fx.volume} min={0} max={200} step={1} unit="%" onChange={(v) => setFx({ volume: v })} />
         <Slider label="Fade in" value={fx.fadeIn} min={0} max={Math.min(5, clip.duration / 2)} step={0.05} unit="s" onChange={(v) => setFx({ fadeIn: v })} />
         <Slider label="Fade out" value={fx.fadeOut} min={0} max={Math.min(5, clip.duration / 2)} step={0.05} unit="s" onChange={(v) => setFx({ fadeOut: v })} />
+      </Section>
+
+            <Section title="Transition In">
+        <div className="mb-2 flex items-center gap-2">
+          <span className="w-20 shrink-0 text-neutral-500">Type</span>
+          <select
+            value={clip.transitionIn?.type || "none"}
+            onChange={(e) =>
+              updateClip(clip.id, {
+                transitionIn: {
+                  type: e.target.value as TransitionType,
+                  duration: clip.transitionIn?.duration ?? 0.5,
+                },
+              })
+            }
+            className="flex-1 rounded bg-neutral-800 px-1 py-1 text-white outline-none"
+          >
+            <option value="none">None</option>
+            <option value="crossfade">Crossfade</option>
+            <option value="dip-black">Dip to Black</option>
+            <option value="wipe-left">Wipe Left</option>
+          </select>
+        </div>
+        {(clip.transitionIn?.type || "none") !== "none" && (
+          <Slider
+            label="Duration"
+            value={clip.transitionIn?.duration ?? 0.5}
+            min={0.1}
+            max={Math.min(3, clip.duration / 2)}
+            step={0.05}
+            unit="s"
+            onChange={(v) =>
+              updateClip(
+                clip.id,
+                {
+                  transitionIn: {
+                    type: clip.transitionIn?.type || "crossfade",
+                    duration: v,
+                  },
+                },
+                false
+              )
+            }
+            onCommit={commitHistory}
+          />
+        )}
       </Section>
 
       <Section title="Color & Effects">
