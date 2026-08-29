@@ -1,8 +1,23 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useEditorStore } from "../store/useEditorStore";
 
 export function useKeyboardShortcuts() {
+  const jHeld = useRef(false);
+  const lHeld = useRef(false);
+  const rateRef = useRef(0);
+
   useEffect(() => {
+    function applyRate(rate: number) {
+      rateRef.current = rate;
+      const s = useEditorStore.getState();
+      s.setShuttleRate(rate);
+      if (rate === 0) {
+        s.setIsPlaying(false);
+      } else {
+        s.setIsPlaying(true);
+      }
+    }
+
     function onKeyDown(e: KeyboardEvent) {
       const target = e.target as HTMLElement;
       if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
@@ -11,6 +26,7 @@ export function useKeyboardShortcuts() {
 
       if (e.code === "Space") {
         e.preventDefault();
+        applyRate(0);
         s.togglePlay();
       } else if (e.key === "Delete" || e.key === "Backspace") {
         if (s.selectedClipId) {
@@ -39,9 +55,35 @@ export function useKeyboardShortcuts() {
         s.setCurrentTime(s.currentTime + (e.shiftKey ? 5 : 1 / 30));
       } else if (e.key === "Escape") {
         s.selectClip(null);
+      } else if (e.key.toLowerCase() === "j" && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        jHeld.current = true;
+        if (rateRef.current > 0) applyRate(0);
+        else if (rateRef.current === 0) applyRate(-1);
+        else if (rateRef.current > -8) applyRate(rateRef.current * 2);
+      } else if (e.key.toLowerCase() === "k" && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        applyRate(0);
+        s.setIsPlaying(false);
+      } else if (e.key.toLowerCase() === "l" && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        lHeld.current = true;
+        if (rateRef.current < 0) applyRate(0);
+        else if (rateRef.current === 0) applyRate(1);
+        else if (rateRef.current < 8) applyRate(rateRef.current * 2);
       }
     }
+
+    function onKeyUp(e: KeyboardEvent) {
+      if (e.key.toLowerCase() === "j") jHeld.current = false;
+      if (e.key.toLowerCase() === "l") lHeld.current = false;
+    }
+
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
   }, []);
 }
