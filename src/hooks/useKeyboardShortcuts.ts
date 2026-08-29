@@ -70,7 +70,14 @@ export function useKeyboardShortcuts() {
         lHeld.current = true;
         if (rateRef.current < 0) applyRate(0);
         else if (rateRef.current === 0) applyRate(1);
-        else if (rateRef.current < 8) applyRate(rateRef.current * 2);
+        else if (rateRef.current < 8) applyRate(rateRef.current * 2)
+              } else if (e.key.toLowerCase() === "f" && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        const stage = document.querySelector("[data-preview-stage]") as HTMLElement | null;
+        if (stage) {
+          if (document.fullscreenElement) document.exitFullscreen();
+          else stage.requestFullscreen?.();
+        }
       }
     }
 
