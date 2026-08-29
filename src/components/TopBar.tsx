@@ -103,6 +103,11 @@ export default function TopBar({ onExport, onAccessibility }: { onExport: () => 
         <button className="toolbar-btn" onClick={() => confirm("Start a new project? Unsaved work will be lost.") && newProject()}>
           <FilePlus2 size={13} /> New
         </button>
+
+                <button className="toolbar-btn" onClick={onAccessibility} title="Accessibility settings">
+          <Accessibility size={13} />
+        </button>
+        
         <button
           className="flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500"
           onClick={onExport}
