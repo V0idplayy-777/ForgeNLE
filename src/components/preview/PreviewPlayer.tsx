@@ -79,29 +79,31 @@ export default function PreviewPlayer() {
         <span className="mr-3 w-24 text-center font-mono text-xs text-neutral-400">
           {formatTimecode(currentTime)}
         </span>
-        <button className="control-btn" title="Go to start" onClick={() => setCurrentTime(0)}>
+        <button type="button" className="control-btn" title="Go to start" onClick={() => setCurrentTime(0)}>
           <SkipBack size={16} />
         </button>
-        <button className="control-btn" title="Back 1s" onClick={() => nudge(-1)}>
+        <button type="button" className="control-btn" title="Back 1s" onClick={() => nudge(-1)}>
           <Rewind size={16} />
         </button>
         <button
+          type="button"
           className="control-btn !bg-indigo-600 !text-white hover:!bg-indigo-500"
           title="Play/Pause (Space)"
           onClick={togglePlay}
         >
           {isPlaying ? <Pause size={18} /> : <Play size={18} />}
         </button>
-        <button className="control-btn" title="Forward 1s" onClick={() => nudge(1)}>
+        <button type="button" className="control-btn" title="Forward 1s" onClick={() => nudge(1)}>
           <FastForward size={16} />
         </button>
-        <button className="control-btn" title="Go to end" onClick={() => setCurrentTime(duration)}>
+        <button type="button" className="control-btn" title="Go to end" onClick={() => setCurrentTime(duration)}>
           <SkipForward size={16} />
         </button>
         <span className="ml-3 w-24 text-center font-mono text-xs text-neutral-600">
           / {formatTimecode(duration)}
         </span>
         <button
+          type="button"
           className="control-btn ml-4"
           title="Fullscreen preview (F)"
           onClick={() => {
