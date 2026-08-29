@@ -28,6 +28,11 @@ interface EditorState {
   isExporting: boolean;
   exportProgress: number;
 
+  shuttleRate: number;
+  highContrast: boolean;
+  reduceMotion: boolean;
+  largeUI: boolean;
+
   setProjectName: (name: string) => void;
   addMedia: (assets: MediaAsset[]) => void;
   removeMedia: (id: string) => void;
@@ -60,6 +65,16 @@ interface EditorState {
   setExporting: (v: boolean) => void;
   setExportProgress: (v: number) => void;
 
+    setShuttleRate: (r: number) => void;
+  toggleHighContrast: () => void;
+  toggleReduceMotion: () => void;
+  toggleLargeUI: () => void;
+
+  setShuttleRate: (r) => set({ shuttleRate: r }),
+  toggleHighContrast: () => set((s) => ({ highContrast: !s.highContrast })),
+  toggleReduceMotion: () => set((s) => ({ reduceMotion: !s.reduceMotion })),
+  toggleLargeUI: () => set((s) => ({ largeUI: !s.largeUI })),
+
   newProject: () => void;
 }
 
@@ -90,6 +105,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   future: [],
   isExporting: false,
   exportProgress: 0,
+  
+  shuttleRate: 0,
+  highContrast: false,
+  reduceMotion: false,
+  largeUI: false,
 
   setProjectName: (name) => set({ projectName: name }),
 
