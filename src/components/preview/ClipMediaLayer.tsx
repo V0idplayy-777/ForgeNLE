@@ -28,23 +28,38 @@ export default function ClipMediaLayer({ clip, track, asset, zIndex }: Props) {
     }
     el.playbackRate = clamp(clip.effects.speed, 0.1, 16);
     el.volume = track.muted ? 0 : clamp(clip.effects.volume / 100, 0, 1);
-    const drift = Math.abs(el.currentTime - localTime);
     if (isPlaying) {
-      if (drift > 0.25 || el.paused) {
-        try {
-          el.currentTime = localTime;
-        } catch {}
-        el.play().catch(() => {});
-      }
+      try {
+        el.currentTime = localTime;
+      } catch {}
+      el.play().catch(() => {});
     } else {
-      if (drift > 0.03) {
-        try {
-          el.currentTime = localTime;
-        } catch {}
-      }
+      try {
+        el.currentTime = localTime;
+      } catch {}
       if (!el.paused) el.pause();
     }
-  }, [active, isPlaying, currentTime, clip.effects.speed, clip.effects.volume, track.muted, localTime, asset]);
+  }, [active, isPlaying, clip.effects.speed, clip.effects.volume, track.muted, asset]);
+
+  useEffect(() => {
+    const unsubscribe = useEditorStore.subscribe((state, previousState) => {
+      if (state.isPlaying || state.currentTime === previousState.currentTime) return;
+      const el = videoRef.current;
+      if (!el || !asset || asset.type !== "video") return;
+      const activeNow = state.currentTime >= clip.start && state.currentTime < clip.start + clip.duration;
+      if (!activeNow) {
+        if (!el.paused) el.pause();
+        return;
+      }
+      const nextLocalTime = clip.trimIn + (state.currentTime - clip.start) * clip.effects.speed;
+      if (Math.abs(el.currentTime - nextLocalTime) > 0.03) {
+        try {
+          el.currentTime = nextLocalTime;
+        } catch {}
+      }
+    });
+    return unsubscribe;
+  }, [asset, clip.start, clip.duration, clip.trimIn, clip.effects.speed]);
 
   if (!asset) return null;
 
