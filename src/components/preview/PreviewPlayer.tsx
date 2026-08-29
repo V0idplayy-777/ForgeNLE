@@ -100,7 +100,21 @@ export default function PreviewPlayer() {
         <span className="ml-3 w-24 text-center font-mono text-xs text-neutral-600">
           / {formatTimecode(duration)}
         </span>
-        <button className="control-btn ml-4" title="Fullscreen preview" onClick={() => stageRef.current?.requestFullscreen?.()}>
+                <button
+          className="control-btn ml-4"
+          title="Fullscreen preview (F)"
+          onClick={() => {
+            const el = stageRef.current;
+            if (!el) return;
+            if (document.fullscreenElement) {
+              document.exitFullscreen();
+            } else {
+              el.requestFullscreen?.();
+            }
+          }}
+        >
+          <Maximize2 size={14} />
+        </button>
           <Maximize2 size={14} />
         </button>
       </div>
