@@ -9,7 +9,12 @@ export function usePlaybackClock() {
   const lastRef = useRef<number>(0);
 
   useEffect(() => {
-    if (!isPlaying && shuttleRate === 0) return;
+    const active = isPlaying || shuttleRate !== 0;
+    if (!active) {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = undefined;
+      return;
+    }
     lastRef.current = performance.now();
 
     const tick = (now: number) => {
@@ -17,18 +22,21 @@ export function usePlaybackClock() {
       lastRef.current = now;
       const state = useEditorStore.getState();
       const duration = getProjectDuration(state.tracks);
+      if (duration <= 0) {
+        state.setIsPlaying(false);
+        state.setShuttleRate(0);
+        return;
+      }
       const rate = state.shuttleRate !== 0 ? state.shuttleRate : 1;
       let next = state.currentTime + dt * rate;
       if (next >= duration) {
-        next = duration;
-        state.setCurrentTime(next);
+        state.setCurrentTime(duration);
         state.setIsPlaying(false);
         state.setShuttleRate(0);
         return;
       }
       if (next <= 0) {
-        next = 0;
-        state.setCurrentTime(next);
+        state.setCurrentTime(0);
         state.setIsPlaying(false);
         state.setShuttleRate(0);
         return;
