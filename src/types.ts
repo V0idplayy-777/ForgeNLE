@@ -29,6 +29,13 @@ export interface ClipEffects {
   fadeOut: number; // seconds
 }
 
+export type TransitionType = "none" | "crossfade" | "dip-black" | "wipe-left";
+
+export interface Transition {
+  type: TransitionType;
+  duration: number;
+}
+
 export function defaultEffects(): ClipEffects {
   return {
     brightness: 100,
@@ -45,6 +52,10 @@ export function defaultEffects(): ClipEffects {
     fadeIn: 0,
     fadeOut: 0,
   };
+}
+
+export function defaultTransition(): Transition {
+  return { type: "none", duration: 0.5 };
 }
 
 export type TextAlign = "left" | "center" | "right";
@@ -89,6 +100,7 @@ export interface Clip {
   duration: number; // length occupied on the timeline, in seconds
   trimIn: number; // in-point inside the source media, in seconds (pre-speed)
   effects: ClipEffects;
+  transitionIn?: Transition;
   text?: TextStyle;
 }
 
