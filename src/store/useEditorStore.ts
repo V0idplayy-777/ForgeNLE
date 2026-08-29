@@ -233,13 +233,19 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   selectClip: (id) => set({ selectedClipId: id }),
   setCurrentTime: (t) => set({ currentTime: Math.max(0, t) }),
   setIsPlaying: (v) => set({ isPlaying: v }),
-  togglePlay: () =>
+    togglePlay: () =>
     set((s) => {
       const duration = getProjectDuration(s.tracks);
-      if (!s.isPlaying && s.currentTime >= duration) {
-        return { isPlaying: true, currentTime: 0 };
+      if (duration <= 0) {
+        return { isPlaying: false, shuttleRate: 0 };
       }
-      return { isPlaying: !s.isPlaying };
+      if (s.isPlaying) {
+        return { isPlaying: false, shuttleRate: 0 };
+      }
+      if (s.currentTime >= duration) {
+        return { isPlaying: true, currentTime: 0, shuttleRate: 0 };
+      }
+      return { isPlaying: true, shuttleRate: 0 };
     }),
   setZoom: (z) => set({ zoom: Math.min(400, Math.max(10, z)) }),
   toggleSnapping: () => set((s) => ({ snapping: !s.snapping })),
