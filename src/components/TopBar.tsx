@@ -14,6 +14,8 @@ const SHORTCUTS: [string, string][] = [
   ["+ / -", "Zoom timeline in/out"],
   ["Esc", "Deselect clip"],
   ["🏳‍🌈", "GAY"],
+  ["J / K / L", "Shuttle reverse / pause / forward"],
+  ["F", "Toggle fullscreen preview"],
 ];
 
 export default function TopBar({ onExport, onAccessibility }: { onExport: () => void; onAccessibility: () => void }) {
