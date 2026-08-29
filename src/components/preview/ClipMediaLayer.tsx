@@ -49,7 +49,22 @@ export default function ClipMediaLayer({ clip, track, asset, zIndex }: Props) {
   if (!asset) return null;
 
   const opacity = fadeOpacity(clip, currentTime);
-  const baseStyle: React.CSSProperties = {
+  let transitionOpacity = 1;
+  let clipPath: string | undefined;
+  const tIn = clip.transitionIn;
+  if (tIn && tIn.type !== "none" && active) {
+    const local = currentTime - clip.start;
+    if (local < tIn.duration) {
+      const p = local / tIn.duration;
+      if (tIn.type === "crossfade" || tIn.type === "dip-black") {
+        transitionOpacity = p;
+      } else if (tIn.type === "wipe-left") {
+        clipPath = `inset(0 ${(1 - p) * 100}% 0 0)`;
+      }
+    }
+  }
+  
+const baseStyle: React.CSSProperties = {
     position: "absolute",
     inset: 0,
     width: "100%",
@@ -57,11 +72,11 @@ export default function ClipMediaLayer({ clip, track, asset, zIndex }: Props) {
     objectFit: "contain",
     display: active ? "block" : "none",
     filter: cssFilterString(clip.effects),
-    opacity,
+    opacity: opacity * transitionOpacity,
     zIndex,
     outline: selectedClipId === clip.id ? "2px solid #6366f1" : "none",
+    clipPath,
   };
-
   if (asset.type === "video") {
     return (
       <video
