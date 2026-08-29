@@ -4,11 +4,12 @@ import { getProjectDuration } from "../lib/utils";
 
 export function usePlaybackClock() {
   const isPlaying = useEditorStore((s) => s.isPlaying);
+  const shuttleRate = useEditorStore((s) => s.shuttleRate);
   const rafRef = useRef<number | undefined>(undefined);
   const lastRef = useRef<number>(0);
 
   useEffect(() => {
-    if (!isPlaying) return;
+    if (!isPlaying && shuttleRate === 0) return;
     lastRef.current = performance.now();
 
     const tick = (now: number) => {
@@ -16,11 +17,20 @@ export function usePlaybackClock() {
       lastRef.current = now;
       const state = useEditorStore.getState();
       const duration = getProjectDuration(state.tracks);
-      let next = state.currentTime + dt;
+      const rate = state.shuttleRate !== 0 ? state.shuttleRate : 1;
+      let next = state.currentTime + dt * rate;
       if (next >= duration) {
         next = duration;
         state.setCurrentTime(next);
         state.setIsPlaying(false);
+        state.setShuttleRate(0);
+        return;
+      }
+      if (next <= 0) {
+        next = 0;
+        state.setCurrentTime(next);
+        state.setIsPlaying(false);
+        state.setShuttleRate(0);
         return;
       }
       state.setCurrentTime(next);
@@ -30,5 +40,5 @@ export function usePlaybackClock() {
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [isPlaying]);
+  }, [isPlaying, shuttleRate]);
 }
