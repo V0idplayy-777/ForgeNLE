@@ -65,13 +65,13 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         applyRate(0);
         s.setIsPlaying(false);
-      } else if (e.key.toLowerCase() === "l" && !e.metaKey && !e.ctrlKey) {
+            } else if (e.key.toLowerCase() === "l" && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         lHeld.current = true;
         if (rateRef.current < 0) applyRate(0);
         else if (rateRef.current === 0) applyRate(1);
-        else if (rateRef.current < 8) applyRate(rateRef.current * 2)
-              } else if (e.key.toLowerCase() === "f" && !e.metaKey && !e.ctrlKey) {
+        else if (rateRef.current < 8) applyRate(rateRef.current * 2);
+      } else if (e.key.toLowerCase() === "f" && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         const stage = document.querySelector("[data-preview-stage]") as HTMLElement | null;
         if (stage) {
