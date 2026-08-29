@@ -40,7 +40,8 @@ export default function PreviewPlayer() {
 
   return (
     <div className="flex flex-1 min-h-0 flex-col bg-neutral-950">
-      <div
+            <div
+        data-preview-stage
         className="relative mx-auto my-3 flex aspect-video w-full max-w-4xl items-center justify-center overflow-hidden rounded-lg border border-neutral-800 bg-black shadow-2xl"
         ref={stageRef}
         onPointerDown={() => selectClip(null)}
