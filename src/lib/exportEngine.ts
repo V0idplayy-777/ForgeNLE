@@ -166,10 +166,26 @@ function drawFrame(ctx: CanvasRenderingContext2D, opts: ExportOptions, prepared:
     const active = t >= p.clip.start && t < p.clip.start + p.clip.duration;
     if (!active) continue;
     const el = p.el as HTMLVideoElement | HTMLImageElement;
-    const opacity = fadeOpacity(p.clip, t);
+    let opacity = fadeOpacity(p.clip, t);
+    let clipPath: Path2D | null = null;
+    const tIn = p.clip.transitionIn;
+    if (tIn && tIn.type !== "none") {
+      const local = t - p.clip.start;
+      if (local < tIn.duration) {
+        const prog = local / tIn.duration;
+        if (tIn.type === "crossfade" || tIn.type === "dip-black") {
+          opacity *= prog;
+        } else if (tIn.type === "wipe-left") {
+          const w = opts.width * prog;
+          clipPath = new Path2D();
+          clipPath.rect(0, 0, w, opts.height);
+        }
+      }
+    }
     ctx.save();
     ctx.globalAlpha = opacity;
     ctx.filter = cssFilterString(p.clip.effects);
+    if (clipPath) ctx.clip(clipPath);
     const srcW = (el as HTMLVideoElement).videoWidth || (el as HTMLImageElement).naturalWidth || opts.width;
     const srcH = (el as HTMLVideoElement).videoHeight || (el as HTMLImageElement).naturalHeight || opts.height;
     const rect = contain(srcW || opts.width, srcH || opts.height, opts.width, opts.height);
