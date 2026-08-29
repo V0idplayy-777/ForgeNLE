@@ -13,7 +13,7 @@ const SHORTCUTS: [string, string][] = [
   ["Shift + ← / →", "Nudge playhead 5s"],
   ["+ / -", "Zoom timeline in/out"],
   ["Esc", "Deselect clip"],
-  ["🏳‍🌈", "GAY"],
+  ["Ctrl/Cmd + Shit + Q + Q", "Commit Tax Evasion"],
   ["J / K / L", "Shuttle reverse / pause / forward"],
   ["F", "Toggle fullscreen preview"],
 ];
