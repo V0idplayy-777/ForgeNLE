@@ -70,11 +70,6 @@ interface EditorState {
   toggleReduceMotion: () => void;
   toggleLargeUI: () => void;
 
-  setShuttleRate: (r) => set({ shuttleRate: r }),
-  toggleHighContrast: () => set((s) => ({ highContrast: !s.highContrast })),
-  toggleReduceMotion: () => set((s) => ({ reduceMotion: !s.reduceMotion })),
-  toggleLargeUI: () => set((s) => ({ largeUI: !s.largeUI })),
-
   newProject: () => void;
 }
 
@@ -274,6 +269,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setExporting: (v) => set({ isExporting: v, exportProgress: v ? 0 : get().exportProgress }),
   setExportProgress: (v) => set({ exportProgress: v }),
+
+  setShuttleRate: (r) => set({ shuttleRate: r }),
+  toggleHighContrast: () => set((s) => ({ highContrast: !s.highContrast })),
+  toggleReduceMotion: () => set((s) => ({ reduceMotion: !s.reduceMotion })),
+  toggleLargeUI: () => set((s) => ({ largeUI: !s.largeUI })),
 
   newProject: () =>
     set({
