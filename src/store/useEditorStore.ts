@@ -93,7 +93,7 @@ function makeDefaultTracks(): Track[] {
 }
 
 export const useEditorStore = create<EditorState>((set, get) => ({
-  projectName: "Untitled Projectt",
+  projectName: "Untitled Project",
   mediaAssets: [],
   tracks: makeDefaultTracks(),
   selectedClipId: null,
@@ -284,7 +284,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       isPlaying: false,
       past: [],
       future: [],
-      projectName: "Untitled Projectt",
+      projectName: "Untitled Project",
     }),
 }));
 
