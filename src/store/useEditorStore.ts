@@ -342,11 +342,27 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => ({
       tracks: s.tracks.map((t) => ({
         ...t,
-        clips: t.clips.map((c) => (clipIds.includes(c.id) ? { ...c, linkGroup: undefined } : c)),
+      clips: t.clips.map((c) => (clipIds.includes(c.id) ? { ...c, linkGroup: undefined } : c)),
       })),
       past: pushHistory(s),
       future: [],
     })),
+  setCurrentTime: (t) => set({ currentTime: Math.max(0, t) }),
+  setIsPlaying: (v) => set({ isPlaying: v }),
+  togglePlay: () =>
+    set((s) => {
+      const duration = getProjectDuration(s.tracks);
+      if (duration <= 0) {
+        return { isPlaying: false, shuttleRate: 0 };
+      }
+      if (s.isPlaying) {
+        return { isPlaying: false, shuttleRate: 0 };
+      }
+      if (s.currentTime >= duration) {
+        return { isPlaying: true, currentTime: 0, shuttleRate: 0 };
+      }
+      return { isPlaying: true, shuttleRate: 0 };
+    }),
   setZoom: (z) => set({ zoom: Math.min(400, Math.max(10, z)) }),
   toggleSnapping: () => set((s) => ({ snapping: !s.snapping })),
 
