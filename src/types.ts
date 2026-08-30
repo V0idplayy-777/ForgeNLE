@@ -102,6 +102,7 @@ export interface Clip {
   effects: ClipEffects;
   transitionIn?: Transition;
   text?: TextStyle;
+  linkGroup?: string;
 }
 
 export interface Track {
