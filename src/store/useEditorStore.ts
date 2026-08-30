@@ -101,6 +101,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   mediaAssets: [],
   tracks: makeDefaultTracks(),
   selectedClipId: null,
+  selectedClipIds: [],
+  clipboard: [],
   currentTime: 0,
   isPlaying: false,
   zoom: 80,
@@ -180,15 +182,22 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   moveClip: (clipId, trackId, newStart) =>
     set((s) => {
       let moving: Clip | null = null;
-      const strippedTracks = s.tracks.map((t) => {
+      s.tracks.forEach((t) => {
         const found = t.clips.find((c) => c.id === clipId);
         if (found) moving = found;
-        return { ...t, clips: t.clips.filter((c) => c.id !== clipId) };
       });
       if (!moving) return {};
+      const delta = newStart - (moving as Clip).start;
+      const group = (moving as Clip).linkGroup;
+      const tracks = s.tracks.map((t) => ({
+        ...t,
+        clips: t.clips
+          .filter((c) => c.id !== clipId)
+          .map((c) => (group && c.linkGroup === group ? { ...c, start: Math.max(0, c.start + delta) } : c)),
+      }));
       const updated = { ...(moving as Clip), trackId, start: Math.max(0, newStart) };
       return {
-        tracks: strippedTracks.map((t) => (t.id === trackId ? { ...t, clips: [...t.clips, updated] } : t)),
+        tracks: tracks.map((t) => (t.id === trackId ? { ...t, clips: [...t.clips, updated] } : t)),
       };
     }),
 
@@ -196,6 +205,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => ({
       tracks: s.tracks.map((t) => ({ ...t, clips: t.clips.filter((c) => c.id !== clipId) })),
       selectedClipId: s.selectedClipId === clipId ? null : s.selectedClipId,
+      selectedClipIds: s.selectedClipIds.filter((id) => id !== clipId),
       past: pushHistory(s),
       future: [],
     })),
@@ -239,23 +249,104 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   commitHistory: () => set((s) => ({ past: pushHistory(s), future: [] })),
 
-  selectClip: (id) => set({ selectedClipId: id }),
-  setCurrentTime: (t) => set({ currentTime: Math.max(0, t) }),
-  setIsPlaying: (v) => set({ isPlaying: v }),
-    togglePlay: () =>
+  selectClip: (id, additive) =>
     set((s) => {
-      const duration = getProjectDuration(s.tracks);
-      if (duration <= 0) {
-        return { isPlaying: false, shuttleRate: 0 };
+      if (!id) return { selectedClipId: null, selectedClipIds: [] };
+      if (additive) {
+        const already = s.selectedClipIds.includes(id);
+        const next = already ? s.selectedClipIds.filter((c) => c !== id) : [...s.selectedClipIds, id];
+        return { selectedClipIds: next, selectedClipId: next.length ? next[next.length - 1] : null };
       }
-      if (s.isPlaying) {
-        return { isPlaying: false, shuttleRate: 0 };
-      }
-      if (s.currentTime >= duration) {
-        return { isPlaying: true, currentTime: 0, shuttleRate: 0 };
-      }
-      return { isPlaying: true, shuttleRate: 0 };
+      return { selectedClipId: id, selectedClipIds: [id] };
     }),
+  toggleClipSelection: (id) =>
+    set((s) => {
+      const already = s.selectedClipIds.includes(id);
+      const next = already ? s.selectedClipIds.filter((c) => c !== id) : [...s.selectedClipIds, id];
+      return { selectedClipIds: next, selectedClipId: next.length ? next[next.length - 1] : null };
+    }),
+  clearSelection: () => set({ selectedClipId: null, selectedClipIds: [] }),
+
+  removeClips: (clipIds, ripple = false) =>
+    set((s) => {
+      const idSet = new Set(clipIds);
+      const tracks = s.tracks.map((t) => {
+        const removedFromThisTrack = t.clips.filter((c) => idSet.has(c.id));
+        let remaining = t.clips.filter((c) => !idSet.has(c.id));
+        if (ripple && removedFromThisTrack.length) {
+          for (const gone of removedFromThisTrack.sort((a, b) => a.start - b.start)) {
+            remaining = remaining.map((c) =>
+              c.start >= gone.start ? { ...c, start: Math.max(0, c.start - gone.duration) } : c
+            );
+          }
+        }
+        return { ...t, clips: remaining };
+      });
+      return { tracks, selectedClipId: null, selectedClipIds: [], past: pushHistory(s), future: [] };
+    }),
+
+  copySelected: () =>
+    set((s) => {
+      const all = s.tracks.flatMap((t) => t.clips);
+      const selected = all.filter((c) => s.selectedClipIds.includes(c.id));
+      return { clipboard: selected.map((c) => ({ ...c, effects: { ...c.effects }, text: c.text ? { ...c.text } : undefined })) };
+    }),
+
+  pasteClipboard: () =>
+    set((s) => {
+      if (s.clipboard.length === 0) return {};
+      const minStart = Math.min(...s.clipboard.map((c) => c.start));
+      const idMap: Record<string, string> = {};
+      const newIds: string[] = [];
+      const tracks = s.tracks.map((t) => {
+        const toAdd = s.clipboard.filter((c) => c.trackId === t.id);
+        if (!toAdd.length) return t;
+        const pasted = toAdd.map((c) => {
+          const newId = uid("clip");
+          idMap[c.id] = newId;
+          newIds.push(newId);
+          return {
+            ...c,
+            id: newId,
+            start: s.currentTime + (c.start - minStart),
+            effects: { ...c.effects },
+            text: c.text ? { ...c.text } : undefined,
+          };
+        });
+        return { ...t, clips: [...t.clips, ...pasted] };
+      });
+      const relinked = tracks.map((t) => ({
+        ...t,
+        clips: t.clips.map((c) =>
+          newIds.includes(c.id) && c.linkGroup && idMap[c.linkGroup] ? { ...c, linkGroup: idMap[c.linkGroup] } : c
+        ),
+      }));
+      return { tracks: relinked, selectedClipIds: newIds, selectedClipId: newIds[newIds.length - 1] ?? null, past: pushHistory(s), future: [] };
+    }),
+
+  linkClips: (clipIds) =>
+    set((s) => {
+      if (clipIds.length < 2) return {};
+      const groupId = uid("link");
+      return {
+        tracks: s.tracks.map((t) => ({
+          ...t,
+          clips: t.clips.map((c) => (clipIds.includes(c.id) ? { ...c, linkGroup: groupId } : c)),
+        })),
+        past: pushHistory(s),
+        future: [],
+      };
+    }),
+
+  unlinkClips: (clipIds) =>
+    set((s) => ({
+      tracks: s.tracks.map((t) => ({
+        ...t,
+        clips: t.clips.map((c) => (clipIds.includes(c.id) ? { ...c, linkGroup: undefined } : c)),
+      })),
+      past: pushHistory(s),
+      future: [],
+    })),
   setZoom: (z) => set({ zoom: Math.min(400, Math.max(10, z)) }),
   toggleSnapping: () => set((s) => ({ snapping: !s.snapping })),
 
