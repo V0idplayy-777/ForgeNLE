@@ -82,10 +82,9 @@ export async function exportProject(tracks: Track[], mediaAssets: MediaAsset[], 
 
   const canvasStream = (canvas as HTMLCanvasElement & { captureStream: (fps?: number) => MediaStream }).captureStream(opts.fps);
   const audioTracks = dest.stream.getAudioTracks();
-    const mimeType = MediaRecorder.isTypeSupported(opts.mimeType) ? opts.mimeType : "video/webm";
+  const combined = new MediaStream([...canvasStream.getVideoTracks(), ...audioTracks]);
+  const mimeType = MediaRecorder.isTypeSupported(opts.mimeType) ? opts.mimeType : "video/webm";
   const recorder = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: opts.bitrate });
-
-  const recorder = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 10_000_000 });
   const chunks: BlobPart[] = [];
   recorder.ondataavailable = (e) => {
     if (e.data.size > 0) chunks.push(e.data);
