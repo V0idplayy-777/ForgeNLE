@@ -38,9 +38,11 @@ export default function ClipBlock({ clip, track, pxPerSec }: Props) {
   const tracks = useEditorStore((s) => s.tracks);
   const mediaAssets = useEditorStore((s) => s.mediaAssets);
   const selectedClipId = useEditorStore((s) => s.selectedClipId);
-  const selectedClipId = useEditorStore((s) => s.selectedClipId);
   const selectedClipIds = useEditorStore((s) => s.selectedClipIds);
   const selectClip = useEditorStore((s) => s.selectClip);
+  const updateClip = useEditorStore((s) => s.updateClip);
+  const moveClip = useEditorStore((s) => s.moveClip);
+  const removeClip = useEditorStore((s) => s.removeClip);
   const removeClips = useEditorStore((s) => s.removeClips);
   const duplicateClip = useEditorStore((s) => s.duplicateClip);
   const splitClipAtTime = useEditorStore((s) => s.splitClipAtTime);
