@@ -11,6 +11,19 @@ const PRESETS = [
   { label: "Vertical (1080x1920)", width: 1080, height: 1920 },
 ];
 
+const FORMATS = [
+  { label: "WebM (VP9)", mimeType: "video/webm;codecs=vp9,opus", ext: "webm" },
+  { label: "WebM (VP8)", mimeType: "video/webm;codecs=vp8,opus", ext: "webm" },
+  { label: "MP4 (if supported)", mimeType: "video/mp4;codecs=avc1,mp4a.40.2", ext: "mp4" },
+];
+
+const BITRATES = [
+  { label: "Low (4 Mbps)", value: 4_000_000 },
+  { label: "Medium (8 Mbps)", value: 8_000_000 },
+  { label: "High (16 Mbps)", value: 16_000_000 },
+  { label: "Very High (30 Mbps)", value: 30_000_000 },
+];
+
 export default function ExportModal({ onClose }: { onClose: () => void }) {
   const tracks = useEditorStore((s) => s.tracks);
   const mediaAssets = useEditorStore((s) => s.mediaAssets);
@@ -22,6 +35,8 @@ export default function ExportModal({ onClose }: { onClose: () => void }) {
 
   const [preset, setPreset] = useState(PRESETS[1]);
   const [fps, setFps] = useState(30);
+  const [format, setFormat] = useState(FORMATS[0]);
+  const [bitrate, setBitrate] = useState(BITRATES[1]);
   const [error, setError] = useState<string | null>(null);
   const [doneUrl, setDoneUrl] = useState<string | null>(null);
 
@@ -36,6 +51,8 @@ export default function ExportModal({ onClose }: { onClose: () => void }) {
         width: preset.width,
         height: preset.height,
         fps,
+        bitrate: bitrate.value,
+        mimeType: format.mimeType,
         onProgress: (r) => setExportProgress(r),
       });
       const url = URL.createObjectURL(blob);
@@ -85,6 +102,32 @@ export default function ExportModal({ onClose }: { onClose: () => void }) {
                 <option value={60}>60 fps</option>
               </select>
             </div>
+
+                        <div className="mb-3">
+              <label className="mb-1 block text-[11px] text-neutral-500">File type</label>
+              <select
+                value={format.label}
+                onChange={(e) => setFormat(FORMATS.find((f) => f.label === e.target.value)!)}
+                className="w-full rounded bg-neutral-800 px-2 py-1.5 text-xs text-white outline-none"
+              >
+                {FORMATS.map((f) => (
+                  <option key={f.label} value={f.label}>{f.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="mb-4">
+              <label className="mb-1 block text-[11px] text-neutral-500">Bitrate</label>
+              <select
+                value={bitrate.label}
+                onChange={(e) => setBitrate(BITRATES.find((b) => b.label === e.target.value)!)}
+                className="w-full rounded bg-neutral-800 px-2 py-1.5 text-xs text-white outline-none"
+              >
+                {BITRATES.map((b) => (
+                  <option key={b.label} value={b.label}>{b.label}</option>
+                ))}
+              </select>
+            </div>
+            
             <p className="mb-4 text-[11px] text-neutral-500">
               Timeline duration: <span className="text-neutral-300">{formatDuration(duration)}</span>. Export
               renders in real time and downloads as a .webm file.
@@ -118,7 +161,7 @@ export default function ExportModal({ onClose }: { onClose: () => void }) {
             <p className="text-xs text-emerald-400">Export complete!</p>
             <a
               href={doneUrl}
-              download={`${projectName.replace(/\s+/g, "_")}.webm`}
+              download={`${projectName.replace(/\s+/g, "_")}.${format.ext}`}
               className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 py-2 text-xs font-semibold text-white hover:bg-emerald-500"
             >
               <Download size={14} /> Download video
