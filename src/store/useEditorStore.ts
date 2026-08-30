@@ -19,6 +19,8 @@ interface EditorState {
   mediaAssets: MediaAsset[];
   tracks: Track[];
   selectedClipId: string | null;
+  selectedClipIds: string[];
+  clipboard: Clip[];
   currentTime: number;
   isPlaying: boolean;
   zoom: number;
@@ -52,7 +54,14 @@ interface EditorState {
   splitClipAtTime: (clipId: string, time: number) => void;
   commitHistory: () => void;
 
-  selectClip: (id: string | null) => void;
+  selectClip: (id: string | null, additive?: boolean) => void;
+  toggleClipSelection: (id: string) => void;
+  clearSelection: () => void;
+  removeClips: (clipIds: string[], ripple?: boolean) => void;
+  copySelected: () => void;
+  pasteClipboard: () => void;
+  linkClips: (clipIds: string[]) => void;
+  unlinkClips: (clipIds: string[]) => void;
   setCurrentTime: (t: number) => void;
   setIsPlaying: (v: boolean) => void;
   togglePlay: () => void;
