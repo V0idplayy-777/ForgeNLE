@@ -31,10 +31,22 @@ export function useKeyboardShortcuts() {
         s2.setShuttleRate(0);
         s2.togglePlay();
       } else if (e.key === "Delete" || e.key === "Backspace") {
-        if (s.selectedClipId) {
+        if (s.selectedClipIds.length > 1) {
           e.preventDefault();
-          s.removeClip(s.selectedClipId);
+          s.removeClips(s.selectedClipIds, e.altKey);
+        } else if (s.selectedClipId) {
+          e.preventDefault();
+          s.removeClips([s.selectedClipId], e.altKey);
         }
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "c") {
+        e.preventDefault();
+        s.copySelected();
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "v") {
+        e.preventDefault();
+        s.pasteClipboard();
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "l") {
+        e.preventDefault();
+        if (s.selectedClipIds.length > 1) s.linkClips(s.selectedClipIds);
       } else if (e.key.toLowerCase() === "s" && !e.metaKey && !e.ctrlKey) {
         if (s.selectedClipId) s.splitClipAtTime(s.selectedClipId, s.currentTime);
       } else if (e.key.toLowerCase() === "d" && (e.metaKey || e.ctrlKey)) {
