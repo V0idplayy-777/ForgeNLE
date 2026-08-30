@@ -5,6 +5,8 @@ export interface ExportOptions {
   width: number;
   height: number;
   fps: number;
+  bitrate: number;
+  mimeType: string;
   onProgress: (ratio: number) => void;
 }
 
@@ -80,10 +82,8 @@ export async function exportProject(tracks: Track[], mediaAssets: MediaAsset[], 
 
   const canvasStream = (canvas as HTMLCanvasElement & { captureStream: (fps?: number) => MediaStream }).captureStream(opts.fps);
   const audioTracks = dest.stream.getAudioTracks();
-  const combined = new MediaStream([...canvasStream.getVideoTracks(), ...audioTracks]);
-
-  const mimeCandidates = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
-  const mimeType = mimeCandidates.find((m) => (window as any).MediaRecorder && MediaRecorder.isTypeSupported(m)) || "video/webm";
+    const mimeType = MediaRecorder.isTypeSupported(opts.mimeType) ? opts.mimeType : "video/webm";
+  const recorder = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: opts.bitrate });
 
   const recorder = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 10_000_000 });
   const chunks: BlobPart[] = [];
