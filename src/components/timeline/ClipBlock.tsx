@@ -49,7 +49,7 @@ export default function ClipBlock({ clip, track, pxPerSec }: Props) {
   const snapping = useEditorStore((s) => s.snapping);
 
   const asset = mediaAssets.find((m) => m.id === clip.mediaId);
-  const selected = selectedClipId === clip.id;
+  const selected = selectedClipIds.includes(clip.id);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const dragState = useRef<{
     mode: "move" | "left" | "right";
@@ -65,7 +65,7 @@ export default function ClipBlock({ clip, track, pxPerSec }: Props) {
   function beginDrag(mode: "move" | "left" | "right", e: React.PointerEvent) {
     if (track.locked) return;
     e.stopPropagation();
-    selectClip(clip.id);
+    if (!selectedClipIds.includes(clip.id)) selectClip(clip.id, e.shiftKey);
     dragState.current = {
       mode,
       startX: e.clientX,
@@ -221,7 +221,7 @@ export default function ClipBlock({ clip, track, pxPerSec }: Props) {
           x={menu.x}
           y={menu.y}
           onClose={() => setMenu(null)}
-          onDelete={() => removeClip(clip.id)}
+          onDelete={() => (selectedClipIds.length > 1 ? removeClips(selectedClipIds) : removeClip(clip.id))}
           onDuplicate={() => duplicateClip(clip.id)}
           onSplit={() => splitClipAtTime(clip.id, currentTime)}
         />
