@@ -1,177 +1,225 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore } from "../../store/useEditorStore";
-import { exportProject } from "../../lib/exportEngine";
-import { getProjectDuration, formatDuration } from "../../lib/utils";
-import { X, Download, Loader2 } from "lucide-react";
+import { canExportMp4, exportProject, ExportResult } from "../../lib/exportEngine";
+import { getProjectDuration, formatDuration, downloadBlob, safeFilename, formatBytes } from "../../lib/utils";
+import { Download, Loader2, CheckCircle2, AlertTriangle, Film, X } from "lucide-react";
+import { Modal, Row, Select, Segmented, Toggle, Btn, NumberField } from "../ui/controls";
 
-const PRESETS = [
-  { label: "1080p (1920x1080)", width: 1920, height: 1080 },
-  { label: "720p (1280x720)", width: 1280, height: 720 },
-  { label: "Square (1080x1080)", width: 1080, height: 1080 },
-  { label: "Vertical (1080x1920)", width: 1080, height: 1920 },
-];
+const QUALITY = [
+  { id: "draft", label: "Draft", mult: 0.35, desc: "Small file, quick share" },
+  { id: "good", label: "Good", mult: 0.7, desc: "Balanced" },
+  { id: "high", label: "High", mult: 1.0, desc: "Recommended" },
+  { id: "max", label: "Max", mult: 1.8, desc: "Archival quality" },
+] as const;
 
-const FORMATS = [
-  { label: "WebM (VP9)", mimeType: "video/webm;codecs=vp9,opus", ext: "webm" },
-  { label: "WebM (VP8)", mimeType: "video/webm;codecs=vp8,opus", ext: "webm" },
-  { label: "MP4 (if supported)", mimeType: "video/mp4;codecs=avc1,mp4a.40.2", ext: "mp4" },
-];
-
-const BITRATES = [
-  { label: "Low (4 Mbps)", value: 4_000_000 },
-  { label: "Medium (8 Mbps)", value: 8_000_000 },
-  { label: "High (16 Mbps)", value: 16_000_000 },
-  { label: "Very High (30 Mbps)", value: 30_000_000 },
-];
+function baseBitrate(w: number, h: number, fps: number) {
+  // ~0.1 bits per pixel per frame for H.264 at "high"
+  const bpp = 0.1;
+  return Math.round(w * h * fps * bpp);
+}
 
 export default function ExportModal({ onClose }: { onClose: () => void }) {
   const tracks = useEditorStore((s) => s.tracks);
   const mediaAssets = useEditorStore((s) => s.mediaAssets);
+  const settings = useEditorStore((s) => s.settings);
   const isExporting = useEditorStore((s) => s.isExporting);
   const exportProgress = useEditorStore((s) => s.exportProgress);
   const setExporting = useEditorStore((s) => s.setExporting);
   const setExportProgress = useEditorStore((s) => s.setExportProgress);
   const projectName = useEditorStore((s) => s.projectName);
+  const inPoint = useEditorStore((s) => s.inPoint);
+  const outPoint = useEditorStore((s) => s.outPoint);
+  const notify = useEditorStore((s) => s.notify);
 
-  const [preset, setPreset] = useState(PRESETS[1]);
-  const [fps, setFps] = useState(30);
-  const [format, setFormat] = useState(FORMATS[0]);
-  const [bitrate, setBitrate] = useState(BITRATES[1]);
+  const [scale, setScale] = useState<"1" | "0.75" | "0.5" | "2">("1");
+  const [fps, setFps] = useState(settings.fps);
+  const [quality, setQuality] = useState<(typeof QUALITY)[number]["id"]>("high");
+  const [container, setContainer] = useState<"mp4" | "webm">("mp4");
+  const [includeAudio, setIncludeAudio] = useState(true);
+  const [useRange, setUseRange] = useState(inPoint !== null && outPoint !== null);
+  const [customBitrate, setCustomBitrate] = useState<number | null>(null);
+  const [mp4Ok, setMp4Ok] = useState<boolean | null>(null);
+  const [stage, setStage] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [doneUrl, setDoneUrl] = useState<string | null>(null);
+  const [result, setResult] = useState<ExportResult | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const duration = getProjectDuration(tracks);
+  const range: [number, number] | undefined = useRange && inPoint !== null && outPoint !== null ? [inPoint, outPoint] : undefined;
+  const exportSeconds = range ? range[1] - range[0] : duration;
+  const width = Math.round((settings.width * Number(scale)) / 2) * 2;
+  const height = Math.round((settings.height * Number(scale)) / 2) * 2;
+  const bitrate = customBitrate ?? Math.round(baseBitrate(width, height, fps) * QUALITY.find((q) => q.id === quality)!.mult);
+  const estSize = ((bitrate + (includeAudio ? 192_000 : 0)) / 8) * exportSeconds;
+
+  useEffect(() => {
+    let alive = true;
+    canExportMp4(width, height, fps, bitrate).then((ok) => {
+      if (!alive) return;
+      setMp4Ok(ok);
+      if (!ok) setContainer("webm");
+    });
+    return () => {
+      alive = false;
+    };
+  }, [width, height, fps, bitrate]);
+
+  const fileName = useMemo(() => `${safeFilename(projectName)}-${height}p.${result?.extension ?? container}`, [projectName, height, container, result]);
 
   async function handleExport() {
     setError(null);
-    setDoneUrl(null);
+    setResult(null);
     setExporting(true);
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    const wasPlaying = useEditorStore.getState().isPlaying;
+    useEditorStore.getState().setIsPlaying(false);
     try {
-      const blob = await exportProject(tracks, mediaAssets, {
-        width: preset.width,
-        height: preset.height,
-        fps,
-        bitrate: bitrate.value,
-        mimeType: format.mimeType,
-        onProgress: (r) => setExportProgress(r),
-      });
-      const url = URL.createObjectURL(blob);
-      setDoneUrl(url);
+      const res = await exportProject(
+        { tracks, assets: mediaAssets, settings },
+        {
+          width,
+          height,
+          fps,
+          bitrate,
+          audioBitrate: 192_000,
+          container,
+          range,
+          includeAudio,
+          signal: ctrl.signal,
+          onProgress: (r, st) => {
+            setExportProgress(r);
+            setStage(st);
+          },
+        }
+      );
+      setResult(res);
+      notify("Export complete", "success");
     } catch (e: any) {
-      setError(e?.message || "Export failed.");
+      if (e?.name === "AbortError") setError("Export cancelled.");
+      else setError(e?.message || "Export failed.");
     } finally {
       setExporting(false);
+      abortRef.current = null;
+      void wasPlaying;
     }
   }
 
   return (
-    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/70 backdrop-blur-sm">
-      <div className="w-[420px] rounded-xl border border-neutral-800 bg-neutral-900 p-5 shadow-2xl">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-white">Export Video</h2>
-          <button onClick={onClose} className="text-neutral-500 hover:text-white">
-            <X size={16} />
-          </button>
-        </div>
-
-        {!isExporting && !doneUrl && (
+    <Modal
+      title={
+        <span className="flex items-center gap-2">
+          <Film size={15} className="text-indigo-400" /> Export
+        </span>
+      }
+      onClose={() => {
+        if (isExporting) abortRef.current?.abort();
+        onClose();
+      }}
+      width={520}
+      footer={
+        result ? (
           <>
-            <div className="mb-3">
-              <label className="mb-1 block text-[11px] text-neutral-500">Resolution</label>
-              <select
-                value={preset.label}
-                onChange={(e) => setPreset(PRESETS.find((p) => p.label === e.target.value)!)}
-                className="w-full rounded bg-neutral-800 px-2 py-1.5 text-xs text-white outline-none"
-              >
-                {PRESETS.map((p) => (
-                  <option key={p.label} value={p.label}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="mb-4">
-              <label className="mb-1 block text-[11px] text-neutral-500">Frame rate</label>
-              <select
-                value={fps}
-                onChange={(e) => setFps(Number(e.target.value))}
-                className="w-full rounded bg-neutral-800 px-2 py-1.5 text-xs text-white outline-none"
-              >
-                <option value={24}>24 fps</option>
-                <option value={30}>30 fps</option>
-                <option value={60}>60 fps</option>
-              </select>
-            </div>
-
-                        <div className="mb-3">
-              <label className="mb-1 block text-[11px] text-neutral-500">File type</label>
-              <select
-                value={format.label}
-                onChange={(e) => setFormat(FORMATS.find((f) => f.label === e.target.value)!)}
-                className="w-full rounded bg-neutral-800 px-2 py-1.5 text-xs text-white outline-none"
-              >
-                {FORMATS.map((f) => (
-                  <option key={f.label} value={f.label}>{f.label}</option>
-                ))}
-              </select>
-            </div>
-            <div className="mb-4">
-              <label className="mb-1 block text-[11px] text-neutral-500">Bitrate</label>
-              <select
-                value={bitrate.label}
-                onChange={(e) => setBitrate(BITRATES.find((b) => b.label === e.target.value)!)}
-                className="w-full rounded bg-neutral-800 px-2 py-1.5 text-xs text-white outline-none"
-              >
-                {BITRATES.map((b) => (
-                  <option key={b.label} value={b.label}>{b.label}</option>
-                ))}
-              </select>
-            </div>
-            
-            <p className="mb-4 text-[11px] text-neutral-500">
-              Timeline duration: <span className="text-neutral-300">{formatDuration(duration)}</span>. Export
-              renders in real time and downloads as a .webm file.
-            </p>
-            {error && <p className="mb-3 text-[11px] text-red-400">{error}</p>}
-            <button
-              onClick={handleExport}
-              disabled={duration <= 0}
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 py-2 text-xs font-semibold text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Download size={14} /> Start Export
-            </button>
+            <Btn variant="ghost" onClick={() => setResult(null)}>Export again</Btn>
+            <Btn variant="primary" size="md" onClick={() => downloadBlob(result.blob, fileName)}>
+              <Download size={14} /> Download {fileName}
+            </Btn>
           </>
-        )}
-
-        {isExporting && (
-          <div className="flex flex-col items-center gap-3 py-6">
-            <Loader2 className="animate-spin text-indigo-400" size={28} />
-            <div className="h-2 w-full overflow-hidden rounded-full bg-neutral-800">
-              <div
-                className="h-full bg-indigo-500 transition-all"
-                style={{ width: `${Math.round(exportProgress * 100)}%` }}
-              />
+        ) : isExporting ? (
+          <Btn variant="danger" onClick={() => abortRef.current?.abort()}>
+            <X size={13} /> Cancel
+          </Btn>
+        ) : (
+          <>
+            <Btn variant="ghost" onClick={onClose}>Close</Btn>
+            <Btn variant="primary" size="md" onClick={handleExport} disabled={exportSeconds <= 0}>
+              <Download size={14} /> Export {container.toUpperCase()}
+            </Btn>
+          </>
+        )
+      }
+    >
+      {result ? (
+        <div className="flex flex-col items-center gap-3 py-4 text-center">
+          <CheckCircle2 size={36} className="text-emerald-400" />
+          <div className="text-sm font-semibold text-white">Ready to download</div>
+          <div className="text-[11px] text-neutral-400">
+            {width}×{height} · {fps} fps · {formatDuration(result.seconds)} · {formatBytes(result.blob.size)} · {result.extension.toUpperCase()}
+          </div>
+          <video src={URL.createObjectURL(result.blob)} controls className="mt-2 max-h-56 w-full rounded-lg border border-white/10 bg-black" />
+        </div>
+      ) : isExporting ? (
+        <div className="flex flex-col items-center gap-3 py-6">
+          <Loader2 className="animate-spin text-indigo-400" size={28} />
+          <div className="h-2 w-full overflow-hidden rounded-full bg-white/5">
+            <div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-violet-400 transition-[width] duration-150" style={{ width: `${Math.round(exportProgress * 100)}%` }} />
+          </div>
+          <p className="text-[11px] text-neutral-400">
+            {Math.round(exportProgress * 100)}% · {stage}
+          </p>
+          <p className="text-[10px] text-neutral-600">Keep this tab in the foreground for the fastest render.</p>
+        </div>
+      ) : (
+        <div className="text-xs">
+          <Row label="Format">
+            <Segmented
+              value={container}
+              onChange={setContainer}
+              options={[
+                { value: "mp4", label: mp4Ok === false ? "MP4 (unavailable)" : "MP4 · H.264", title: "Frame-accurate render, widest compatibility" },
+                { value: "webm", label: "WebM · VP9", title: "Real-time recording fallback" },
+              ]}
+              className="w-full"
+            />
+          </Row>
+          {container === "mp4" && mp4Ok === false && (
+            <div className="mb-2 flex items-start gap-2 rounded-md border border-amber-500/20 bg-amber-500/10 p-2 text-[10px] text-amber-300">
+              <AlertTriangle size={12} className="mt-0.5 shrink-0" /> This browser can't encode H.264 at {width}×{height}. Use WebM or a Chromium-based browser.
             </div>
-            <p className="text-[11px] text-neutral-400">Rendering… {Math.round(exportProgress * 100)}%</p>
+          )}
+          {container === "webm" && (
+            <p className="mb-2 text-[10px] text-neutral-500">WebM records the preview in real time (export takes as long as the video). MP4 renders offline and is frame-accurate.</p>
+          )}
+          <Row label="Resolution">
+            <Select
+              value={scale}
+              onChange={setScale}
+              options={[
+                { value: "2", label: `${settings.width * 2}×${settings.height * 2} (2×)` },
+                { value: "1", label: `${settings.width}×${settings.height} (project)` },
+                { value: "0.75", label: `${Math.round(settings.width * 0.75)}×${Math.round(settings.height * 0.75)}` },
+                { value: "0.5", label: `${settings.width / 2}×${settings.height / 2} (half)` },
+              ]}
+            />
+          </Row>
+          <Row label="Frame rate">
+            <Segmented value={String(fps) as any} onChange={(v) => setFps(Number(v))} options={[24, 25, 30, 50, 60].map((f) => ({ value: String(f), label: String(f) }))} size="xs" className="w-full" />
+          </Row>
+          <Row label="Quality">
+            <Segmented value={quality} onChange={(v) => { setQuality(v); setCustomBitrate(null); }} options={QUALITY.map((q) => ({ value: q.id, label: q.label, title: q.desc }))} size="xs" className="w-full" />
+          </Row>
+          <Row label="Bitrate">
+            <NumberField value={Math.round(bitrate / 1_000_000 * 10) / 10} min={0.5} max={200} step={0.5} precision={1} unit="Mbps" onChange={(v) => setCustomBitrate(Math.round(v * 1_000_000))} className="w-[90px]" />
+            <span className="text-[10px] text-neutral-500">≈ {formatBytes(estSize)}</span>
+          </Row>
+          <Row label="Audio">
+            <Toggle checked={includeAudio} onChange={setIncludeAudio} label="Include audio (AAC 192 kbps)" />
+          </Row>
+          <Row label="Range">
+            <Toggle checked={useRange} onChange={setUseRange} label={inPoint !== null && outPoint !== null ? `In → Out (${formatDuration(outPoint - inPoint)})` : "Set In/Out points (I / O) to export a section"} />
+          </Row>
+          <div className="mt-3 rounded-lg border border-white/5 bg-white/[0.03] p-3 text-[11px] text-neutral-400">
+            <div className="flex justify-between"><span>Output</span><span className="font-mono text-neutral-200">{width}×{height} @ {fps}fps</span></div>
+            <div className="flex justify-between"><span>Duration</span><span className="font-mono text-neutral-200">{formatDuration(exportSeconds)} ({Math.round(exportSeconds * fps)} frames)</span></div>
+            <div className="flex justify-between"><span>File name</span><span className="truncate font-mono text-neutral-200">{fileName}</span></div>
           </div>
-        )}
-
-        {doneUrl && (
-          <div className="flex flex-col items-center gap-3 py-4">
-            <p className="text-xs text-emerald-400">Export complete!</p>
-            <a
-              href={doneUrl}
-              download={`${projectName.replace(/\s+/g, "_")}.${format.ext}`}
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 py-2 text-xs font-semibold text-white hover:bg-emerald-500"
-            >
-              <Download size={14} /> Download video
-            </a>
-            <button onClick={() => setDoneUrl(null)} className="text-[11px] text-neutral-500 hover:text-white">
-              Export again
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
+          {error && (
+            <div className="mt-3 flex items-start gap-2 rounded-md border border-red-500/20 bg-red-500/10 p-2 text-[11px] text-red-300">
+              <AlertTriangle size={12} className="mt-0.5 shrink-0" /> {error}
+            </div>
+          )}
+        </div>
+      )}
+    </Modal>
   );
 }

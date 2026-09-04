@@ -1,115 +1,379 @@
-import { useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore } from "../../store/useEditorStore";
+import { getProjectDuration, formatTimecode } from "../../lib/utils";
 import Ruler from "./Ruler";
-import TrackHeader from "./TrackHeader";
+import TrackHeader, { TRACK_HEIGHTS } from "./TrackHeader";
 import TrackLane from "./TrackLane";
-import { getProjectDuration } from "../../lib/utils";
-import { ZoomIn, ZoomOut, Magnet, Plus, Scissors, Trash2, Copy } from "lucide-react";
+import { TimelineContext } from "./timelineContext";
+import {
+  Plus,
+  Scissors,
+  Trash2,
+  Magnet,
+  ZoomIn,
+  ZoomOut,
+  MousePointer2,
+  Slice,
+  Hand,
+  Link2,
+  Flag,
+  Maximize,
+  Rows3,
+  Bookmark,
+  Split,
+  Undo2,
+  Redo2,
+} from "lucide-react";
+import { IconBtn } from "../ui/controls";
+import { cn } from "../../utils/cn";
+
+const HEADER_W = 176;
 
 export default function Timeline() {
   const tracks = useEditorStore((s) => s.tracks);
   const zoom = useEditorStore((s) => s.zoom);
   const setZoom = useEditorStore((s) => s.setZoom);
-  const setCurrentTime = useEditorStore((s) => s.setCurrentTime);
   const currentTime = useEditorStore((s) => s.currentTime);
+  const setCurrentTime = useEditorStore((s) => s.setCurrentTime);
+  const setIsPlaying = useEditorStore((s) => s.setIsPlaying);
+  const isPlaying = useEditorStore((s) => s.isPlaying);
   const snapping = useEditorStore((s) => s.snapping);
   const toggleSnapping = useEditorStore((s) => s.toggleSnapping);
+  const rippleMode = useEditorStore((s) => s.rippleMode);
+  const toggleRipple = useEditorStore((s) => s.toggleRipple);
   const addTrack = useEditorStore((s) => s.addTrack);
-  const selectedClipId = useEditorStore((s) => s.selectedClipId);
-  const splitClipAtTime = useEditorStore((s) => s.splitClipAtTime);
-  const removeClip = useEditorStore((s) => s.removeClip);
-  const duplicateClip = useEditorStore((s) => s.duplicateClip);
+  const selectedClipIds = useEditorStore((s) => s.selectedClipIds);
+  const splitAtTime = useEditorStore((s) => s.splitAtTime);
+  const removeClips = useEditorStore((s) => s.removeClips);
+  const linkClips = useEditorStore((s) => s.linkClips);
+  const tool = useEditorStore((s) => s.tool);
+  const setTool = useEditorStore((s) => s.setTool);
+  const addMarker = useEditorStore((s) => s.addMarker);
+  const fps = useEditorStore((s) => s.settings.fps);
+  const selectClips = useEditorStore((s) => s.selectClips);
+  const selectClip = useEditorStore((s) => s.selectClip);
+  const inPoint = useEditorStore((s) => s.inPoint);
+  const outPoint = useEditorStore((s) => s.outPoint);
+  const undo = useEditorStore((s) => s.undo);
+  const redo = useEditorStore((s) => s.redo);
+  const canUndo = useEditorStore((s) => s.past.length > 0 || s.pending !== null);
+  const canRedo = useEditorStore((s) => s.future.length > 0);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [snapLine, setSnapLine] = useState<number | null>(null);
+  const [marquee, setMarquee] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
+  const [viewportW, setViewportW] = useState(1000);
+  const wasPlayingRef = useRef(false);
+
   const duration = getProjectDuration(tracks);
-  const contentWidth = Math.max(duration * zoom + 400, 1000);
-  const HEADER_W = 160;
+  const contentWidth = Math.max(duration * zoom + viewportW * 0.6, viewportW - HEADER_W + 200);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setViewportW(el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Keep the playhead in view while playing
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !isPlaying) return;
+    const x = currentTime * zoom;
+    const visL = el.scrollLeft;
+    const visR = el.scrollLeft + el.clientWidth - HEADER_W;
+    if (x > visR - 40 || x < visL) el.scrollLeft = Math.max(0, x - 80);
+  }, [currentTime, isPlaying, zoom]);
+
+  const clientXToTime = useCallback(
+    (x: number) => {
+      const el = scrollRef.current;
+      if (!el) return 0;
+      const rect = el.getBoundingClientRect();
+      return (x - rect.left - HEADER_W + el.scrollLeft) / zoom;
+    },
+    [zoom]
+  );
+
+  const zoomToFit = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || duration <= 0) return;
+    setZoom(((el.clientWidth - HEADER_W - 40) / duration) | 0);
+    el.scrollLeft = 0;
+  }, [duration, setZoom]);
+
+  // Expose to keyboard shortcuts
+  useEffect(() => {
+    (window as any).__forgeZoomFit = zoomToFit;
+  }, [zoomToFit]);
+
+  // Wheel: ctrl/cmd + wheel zooms around cursor; shift + wheel scrolls horizontally
+  function onWheel(e: React.WheelEvent) {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left - HEADER_W + el.scrollLeft;
+      const tAtMouse = mouseX / zoom;
+      const factor = Math.exp(-e.deltaY * 0.0015);
+      const nz = Math.min(800, Math.max(4, zoom * factor));
+      setZoom(nz);
+      requestAnimationFrame(() => {
+        el.scrollLeft = Math.max(0, tAtMouse * nz - (e.clientX - rect.left - HEADER_W));
+      });
+    } else if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      // native horizontal scroll works
+    }
+  }
+
+  // Background pointer down: seek + start marquee selection
+  function onBackgroundPointerDown(e: React.PointerEvent) {
+    const target = e.target as HTMLElement;
+    if (target.closest("[data-clip-id]") || target.closest("[data-track-header]")) return;
+    if (e.button !== 0) return;
+    // Stop native text selection / drag from cancelling the pointer sequence.
+    e.preventDefault();
+    const el = scrollRef.current!;
+    const rect = el.getBoundingClientRect();
+    const startX = e.clientX - rect.left + el.scrollLeft;
+    const startY = e.clientY - rect.top + el.scrollTop;
+    if (startX < HEADER_W) return;
+
+    if (tool === "hand") {
+      const sl = el.scrollLeft;
+      const sx = e.clientX;
+      const move = (ev: PointerEvent) => (el.scrollLeft = sl - (ev.clientX - sx));
+      const up = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+      return;
+    }
+
+    const additive = e.shiftKey || e.metaKey || e.ctrlKey;
+    if (!additive) selectClip(null);
+    const t = Math.max(0, (startX - HEADER_W) / zoom);
+    setIsPlaying(false);
+    if (tool === "razor") {
+      splitAtTime(Math.round(t * fps) / fps);
+      return;
+    }
+    setCurrentTime(Math.round(t * fps) / fps);
+    let dragging = false;
+    const startSel = additive ? [...useEditorStore.getState().selectedClipIds] : [];
+    const move = (ev: PointerEvent) => {
+      const x = ev.clientX - rect.left + el.scrollLeft;
+      const y = ev.clientY - rect.top + el.scrollTop;
+      if (!dragging && Math.hypot(x - startX, y - startY) < 4) return;
+      dragging = true;
+      const box = { x1: Math.min(startX, x), y1: Math.min(startY, y), x2: Math.max(startX, x), y2: Math.max(startY, y) };
+      setMarquee(box);
+      // hit test
+      const t1 = (box.x1 - HEADER_W) / zoom;
+      const t2 = (box.x2 - HEADER_W) / zoom;
+      let yCursor = 32; // ruler height
+      const ids: string[] = [...startSel];
+      for (const tr of useEditorStore.getState().tracks) {
+        const h = TRACK_HEIGHTS[tr.height];
+        const top = yCursor;
+        const bottom = yCursor + h;
+        yCursor = bottom;
+        if (bottom < box.y1 || top > box.y2 || tr.locked) continue;
+        for (const c of tr.clips) {
+          if (c.start < t2 && c.start + c.duration > t1 && !ids.includes(c.id)) ids.push(c.id);
+        }
+      }
+      selectClips(ids);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setMarquee(null);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  const ctx = useMemo(() => ({ pxPerSec: zoom, fps, setSnapLine, clientXToTime, headerWidth: HEADER_W }), [zoom, fps, clientXToTime]);
+  const totalTrackHeight = tracks.reduce((n, t) => n + TRACK_HEIGHTS[t.height], 0);
+  const canLink = selectedClipIds.length > 1;
 
   return (
-    <div className="flex h-[300px] shrink-0 flex-col border-t border-neutral-800 bg-neutral-950">
-      <div className="flex items-center gap-2 border-b border-neutral-800 bg-neutral-900 px-3 py-1.5">
-        <button className="toolbar-btn" onClick={() => addTrack("video")}>
-          <Plus size={12} /> Video
-        </button>
-        <button className="toolbar-btn" onClick={() => addTrack("audio")}>
-          <Plus size={12} /> Audio
-        </button>
-        <button className="toolbar-btn" onClick={() => addTrack("text")}>
-          <Plus size={12} /> Text
-        </button>
-        <div className="mx-2 h-4 w-px bg-neutral-700" />
-        <button
-          className="toolbar-btn"
-          disabled={!selectedClipId}
-          onClick={() => selectedClipId && splitClipAtTime(selectedClipId, currentTime)}
-          title="Split clip at playhead (S)"
-        >
-          <Scissors size={12} /> Split
-        </button>
-        <button
-          className="toolbar-btn"
-          disabled={!selectedClipId}
-          onClick={() => selectedClipId && duplicateClip(selectedClipId)}
-        >
-          <Copy size={12} /> Duplicate
-        </button>
-        <button
-          className="toolbar-btn"
-          disabled={!selectedClipId}
-          onClick={() => selectedClipId && removeClip(selectedClipId)}
-        >
-          <Trash2 size={12} /> Delete
-        </button>
-        <div className="mx-2 h-4 w-px bg-neutral-700" />
-        <button
-          className={`toolbar-btn ${snapping ? "!bg-indigo-600 !text-white" : ""}`}
-          onClick={toggleSnapping}
-          title="Toggle snapping"
-        >
-          <Magnet size={12} /> Snap
-        </button>
-        <div className="ml-auto flex items-center gap-1">
-          <button className="control-btn" onClick={() => setZoom(zoom / 1.3)}>
-            <ZoomOut size={14} />
-          </button>
-          <input
-            type="range"
-            min={10}
-            max={400}
-            value={zoom}
-            onChange={(e) => setZoom(Number(e.target.value))}
-            className="w-24 accent-indigo-500"
-          />
-          <button className="control-btn" onClick={() => setZoom(zoom * 1.3)}>
-            <ZoomIn size={14} />
-          </button>
-        </div>
-      </div>
-
-      <div className="relative flex-1 overflow-auto" ref={scrollRef}>
-        <div style={{ width: HEADER_W + contentWidth, position: "relative" }}>
-          <div className="sticky top-0 z-30 flex">
-            <div className="sticky left-0 z-40 flex h-7 w-40 shrink-0 items-center justify-center border-b border-r border-neutral-800 bg-neutral-900 text-[10px] text-neutral-600">
-              {duration > 0 ? `${Math.round(duration)}s total` : "timeline"}
-            </div>
-            <Ruler pxPerSec={zoom} duration={duration} onSeek={setCurrentTime} />
+    <TimelineContext.Provider value={ctx}>
+      <div className="flex min-h-0 flex-1 flex-col border-t border-white/5 bg-[#0e0e10]">
+        {/* Toolbar */}
+        <div className="flex h-10 shrink-0 items-center gap-1 border-b border-white/5 bg-[#131316] px-2">
+          <div className="flex items-center rounded-md border border-white/5 bg-white/[0.03] p-0.5">
+            <ToolBtn active={tool === "select"} onClick={() => setTool("select")} title="Select (V)">
+              <MousePointer2 size={14} />
+            </ToolBtn>
+            <ToolBtn active={tool === "razor"} onClick={() => setTool("razor")} title="Razor (C)">
+              <Slice size={14} />
+            </ToolBtn>
+            <ToolBtn active={tool === "hand"} onClick={() => setTool("hand")} title="Hand (H)">
+              <Hand size={14} />
+            </ToolBtn>
           </div>
+          <div className="mx-1 h-5 w-px bg-white/10" />
+          <IconBtn title="Undo (⌘Z)" onClick={undo} disabled={!canUndo}>
+            <Undo2 size={14} />
+          </IconBtn>
+          <IconBtn title="Redo (⌘⇧Z)" onClick={redo} disabled={!canRedo}>
+            <Redo2 size={14} />
+          </IconBtn>
+          <div className="mx-1 h-5 w-px bg-white/10" />
+          <IconBtn title="Split at playhead (S)" onClick={() => splitAtTime(currentTime, selectedClipIds.length ? selectedClipIds : undefined)}>
+            <Scissors size={14} />
+          </IconBtn>
+          <IconBtn title="Delete (⌫)" disabled={!selectedClipIds.length} onClick={() => removeClips(selectedClipIds, false)} danger>
+            <Trash2 size={14} />
+          </IconBtn>
+          <IconBtn title="Link selected (⌘L)" disabled={!canLink} onClick={() => linkClips(selectedClipIds)}>
+            <Link2 size={14} />
+          </IconBtn>
+          <IconBtn title="Add marker (M)" onClick={() => addMarker()}>
+            <Bookmark size={14} />
+          </IconBtn>
+          <div className="mx-1 h-5 w-px bg-white/10" />
+          <IconBtn title="Snapping (N)" active={snapping} onClick={toggleSnapping}>
+            <Magnet size={14} />
+          </IconBtn>
+          <IconBtn title="Ripple edit mode (R) — deleting closes gaps" active={rippleMode} onClick={toggleRipple}>
+            <Split size={14} />
+          </IconBtn>
+          <div className="mx-1 h-5 w-px bg-white/10" />
+          <button className="toolbar-btn" onClick={() => addTrack("video")} title="Add video track">
+            <Plus size={11} /> Video
+          </button>
+          <button className="toolbar-btn" onClick={() => addTrack("audio")} title="Add audio track">
+            <Plus size={11} /> Audio
+          </button>
 
-          {tracks.map((track) => (
-            <div className="flex" key={track.id}>
-              <TrackHeader track={track} />
-              <TrackLane track={track} width={contentWidth} pxPerSec={zoom} />
-            </div>
-          ))}
-
-          <div
-            className="pointer-events-none absolute bottom-0 top-7 z-40 w-px bg-red-500"
-            style={{ left: HEADER_W + currentTime * zoom }}
-          >
-            <div className="absolute -top-0 -left-1.5 h-2.5 w-2.5 rotate-45 bg-red-500" />
+          <div className="ml-auto flex items-center gap-1">
+            {selectedClipIds.length > 0 && (
+              <span className="mr-2 rounded bg-indigo-500/15 px-1.5 py-0.5 text-[10px] font-medium text-indigo-300">
+                {selectedClipIds.length} selected
+              </span>
+            )}
+            {inPoint !== null && outPoint !== null && (
+              <span className="mr-2 flex items-center gap-1 rounded bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-neutral-400" title="In/Out range">
+                <Flag size={9} /> {formatTimecode(outPoint - inPoint, fps).slice(3)}
+              </span>
+            )}
+            <IconBtn title="Zoom to fit (⇧Z)" onClick={zoomToFit}>
+              <Maximize size={13} />
+            </IconBtn>
+            <IconBtn title="Zoom out (-)" onClick={() => setZoom(zoom / 1.3)}>
+              <ZoomOut size={14} />
+            </IconBtn>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={zoomToSlider(zoom)}
+              onChange={(e) => setZoom(sliderToZoom(Number(e.target.value)))}
+              className="fx-slider w-24"
+              style={{ ["--pct" as any]: `${zoomToSlider(zoom)}%` }}
+            />
+            <IconBtn title="Zoom in (+)" onClick={() => setZoom(zoom * 1.3)}>
+              <ZoomIn size={14} />
+            </IconBtn>
           </div>
         </div>
+
+        {/* Tracks */}
+        <div className="relative min-h-0 flex-1 select-none overflow-auto overscroll-none" ref={scrollRef} onWheel={onWheel} onPointerDown={onBackgroundPointerDown}>
+          <div style={{ width: HEADER_W + contentWidth, position: "relative", minHeight: "100%" }}>
+            {/* Ruler row */}
+            <div className="sticky top-0 z-30 flex">
+              <div
+                data-track-header
+                className="sticky left-0 z-40 flex h-8 w-[176px] shrink-0 items-center justify-between border-b border-r border-white/5 bg-[#141417] px-2 text-[10px] text-neutral-500"
+              >
+                <span className="flex items-center gap-1">
+                  <Rows3 size={11} /> {tracks.length} tracks
+                </span>
+                <span className="font-mono">{duration > 0 ? formatTimecode(duration, fps).slice(3, 8) : "--:--"}</span>
+              </div>
+              <Ruler
+                pxPerSec={zoom}
+                width={contentWidth}
+                fps={fps}
+                onScrubStart={() => {
+                  wasPlayingRef.current = useEditorStore.getState().isPlaying;
+                }}
+                onScrubEnd={() => {
+                  if (wasPlayingRef.current) setIsPlaying(true);
+                }}
+              />
+            </div>
+
+            {tracks.map((track, i) => (
+              <div className="flex" key={track.id}>
+                <div data-track-header>
+                  <TrackHeader track={track} index={i} total={tracks.length} />
+                </div>
+                <TrackLane track={track} width={contentWidth} height={TRACK_HEIGHTS[track.height]} />
+              </div>
+            ))}
+
+            {tracks.length === 0 && (
+              <div className="flex h-40 items-center justify-center text-xs text-neutral-600">No tracks — add a video or audio track above.</div>
+            )}
+
+            {/* In/Out shading over tracks */}
+            {inPoint !== null && outPoint !== null && outPoint > inPoint && (
+              <>
+                <div className="pointer-events-none absolute top-8 z-20 bg-black/40" style={{ left: HEADER_W, width: inPoint * zoom, height: totalTrackHeight }} />
+                <div className="pointer-events-none absolute top-8 z-20 bg-black/40" style={{ left: HEADER_W + outPoint * zoom, width: Math.max(0, contentWidth - outPoint * zoom), height: totalTrackHeight }} />
+              </>
+            )}
+
+            {/* Snap guide */}
+            {snapLine !== null && (
+              <div className="pointer-events-none absolute top-8 z-40 w-px bg-amber-300 shadow-[0_0_6px_#fcd34d]" style={{ left: HEADER_W + snapLine * zoom, height: totalTrackHeight }} />
+            )}
+
+            {/* Marquee */}
+            {marquee && (
+              <div
+                className="pointer-events-none absolute z-50 rounded-sm border border-indigo-400 bg-indigo-400/10"
+                style={{ left: marquee.x1, top: marquee.y1, width: marquee.x2 - marquee.x1, height: marquee.y2 - marquee.y1 }}
+              />
+            )}
+
+            {/* Playhead */}
+            <div className="pointer-events-none absolute top-0 z-50 w-px bg-red-500" style={{ left: HEADER_W + currentTime * zoom, height: 32 + totalTrackHeight }}>
+              <div className="absolute -left-[6px] top-0 h-0 w-0 border-l-[6px] border-r-[6px] border-t-[9px] border-l-transparent border-r-transparent border-t-red-500" />
+              <div className="absolute -left-[5px] top-[9px] h-2 w-[11px] bg-red-500" style={{ clipPath: "polygon(0 0, 100% 0, 50% 100%)" }} />
+            </div>
+          </div>
+        </div>
       </div>
-    </div>
+    </TimelineContext.Provider>
   );
+}
+
+function ToolBtn({ active, onClick, title, children }: { active: boolean; onClick: () => void; title: string; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={cn("flex h-6 w-7 items-center justify-center rounded transition-colors", active ? "bg-indigo-500 text-white" : "text-neutral-400 hover:bg-white/5 hover:text-white")}
+    >
+      {children}
+    </button>
+  );
+}
+
+// logarithmic zoom slider mapping 4..800 px/s
+function zoomToSlider(z: number) {
+  return ((Math.log(z) - Math.log(4)) / (Math.log(800) - Math.log(4))) * 100;
+}
+function sliderToZoom(v: number) {
+  return Math.exp(Math.log(4) + (v / 100) * (Math.log(800) - Math.log(4)));
 }
