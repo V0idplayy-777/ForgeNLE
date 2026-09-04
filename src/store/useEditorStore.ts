@@ -30,9 +30,13 @@ import {
   ClipMask,
   defaultChromaKey,
   defaultMask,
+  Keyframe,
+  KeyframeMap,
 } from "../types";
 import { allClips, clamp, findClip, getProjectDuration, pickClipColor, uid } from "../lib/utils";
-import { baseValue, evaluateKeyframes, keyframeAt, removeKeyframeAt, scaleKeyframes, shiftKeyframes, upsertKeyframe } from "../lib/keyframes";
+import { baseValue, durationForSource, evaluateKeyframes, keyframeAt, removeKeyframeAt, scaleKeyframes, shiftKeyframes, sourceOffsetAt, sourceSpan, upsertKeyframe } from "../lib/keyframes";
+import { sourceTime } from "../lib/renderer";
+import type { ScopeKind } from "../lib/scopes";
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -74,6 +78,9 @@ export interface EditorState {
   tool: ToolMode;
   showSafeZones: boolean;
   showGrid: boolean;
+  /** Video scope shown under the preview (null = hidden). */
+  scope: ScopeKind | null;
+  setScope: (k: ScopeKind | null) => void;
   previewQuality: "full" | "half" | "quarter";
 
   // panels
@@ -137,6 +144,24 @@ export interface EditorState {
   setClipTransition: (clipId: string, transition: Transition | undefined) => void;
   setClipBlendMode: (clipId: string, mode: BlendMode) => void;
   setClipSpeed: (clipId: string, speed: number) => void;
+  /** Time remapping: reverse, freeze frame, speed ramp presets. */
+  setClipReverse: (clipId: string, reverse: boolean) => void;
+  setClipSpeedRamp: (clipId: string, ramp: Keyframe[] | undefined) => void;
+  /** Split at the playhead and insert a held frame of `seconds` between the halves. */
+  freezeFrameAtPlayhead: (clipId: string, seconds?: number) => void;
+
+  // trim tools
+  /** Slip: move the source in/out points without changing timeline position or length. */
+  slipClip: (clipId: string, deltaSource: number, record?: boolean) => void;
+  /** Roll: move the edit point between this clip and the next adjacent one. */
+  rollEdit: (clipId: string, delta: number, record?: boolean) => void;
+  /** Ripple trim: trim an edge and shift everything after it on the track. */
+  rippleTrim: (clipId: string, side: "start" | "end", delta: number, record?: boolean) => void;
+
+  // attribute clipboard
+  attributesClipboard: Partial<Clip> | null;
+  copyAttributes: (clipId: string) => void;
+  pasteAttributes: (clipIds: string[], parts?: { transform?: boolean; effects?: boolean; audio?: boolean; text?: boolean; mask?: boolean; chromaKey?: boolean; speed?: boolean }) => void;
   setClipColor: (clipIds: string[], color: string) => void;
 
   moveClips: (clipIds: string[], deltaTime: number, targetTrackId?: string, record?: boolean) => void;
@@ -159,6 +184,8 @@ export interface EditorState {
   setKeyframeValue: (clipId: string, prop: AnimProp, value: number, record?: boolean) => void;
   removeKeyframe: (clipId: string, prop: AnimProp, time: number) => void;
   clearKeyframes: (clipId: string, prop?: AnimProp) => void;
+  /** Replace all keyframes of one property (used by auto-duck / generated curves). */
+  setKeyframeCurve: (clipId: string, prop: AnimProp, keyframes: Keyframe[] | undefined) => void;
   setKeyframeEasing: (clipId: string, prop: AnimProp, time: number, easing: Easing) => void;
 
   // markers / in-out
@@ -375,6 +402,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   selectedClipIds: [],
   selectedClipId: null,
   clipboard: [],
+  attributesClipboard: null,
 
   currentTime: 0,
   isPlaying: false,
@@ -389,6 +417,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   tool: "select",
   showSafeZones: false,
   showGrid: false,
+  scope: null,
   previewQuality: "half",
 
   leftTab: "media",
@@ -706,6 +735,214 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }),
   setClipColor: (clipIds, color) => set((s) => ({ tracks: mapClips(s.tracks, clipIds, (c) => ({ ...c, color })), ...record(s) })),
 
+  setClipReverse: (clipId, reverse) =>
+    set((s) => ({ tracks: mapClips(s.tracks, expandLinked(s.tracks, [clipId]), (c) => ({ ...c, reverse })), ...record(s) })),
+
+  setClipSpeedRamp: (clipId, ramp) =>
+    set((s) => {
+      const ids = expandLinked(s.tracks, [clipId]);
+      const tracks = mapClips(s.tracks, ids, (c) => {
+        const asset = s.mediaAssets.find((m) => m.id === c.mediaId);
+        const sourceLen = sourceSpan(c); // media currently covered
+        const next: Clip = { ...c, speedRamp: ramp && ramp.length ? [...ramp].sort((a, b) => a.time - b.time) : undefined };
+        // Keep covering the same media: recompute the timeline duration for the new curve.
+        // The ramp's time base is the clip's own duration, so stretching the ramp by f
+        // scales the consumed source by f too → closed form D' = D · S / Src(D).
+        let duration: number;
+        const maxSource = asset && asset.type !== "image" ? asset.duration - c.trimIn : Infinity;
+        if (next.speedRamp) {
+          const srcAtD = Math.max(1e-6, sourceOffsetAt(next, c.duration));
+          duration = (c.duration * Math.min(sourceLen, maxSource)) / srcAtD;
+        } else {
+          duration = Math.min(sourceLen, maxSource) / next.speed;
+        }
+        duration = Math.max(0.05, duration);
+        const factor = duration / c.duration;
+        return { ...next, duration, keyframes: scaleKeyframes(c.keyframes, factor), speedRamp: next.speedRamp ? scaleKeyframes({ x: next.speedRamp }, factor).x : undefined };
+      });
+      return { tracks: resolveOverlapsIn(tracks, ids), ...record(s) };
+    }),
+
+  freezeFrameAtPlayhead: (clipId, seconds = 2) =>
+    set((s) => {
+      const found = findClip(s.tracks, clipId);
+      if (!found) return {};
+      const { clip } = found;
+      const t = s.currentTime;
+      if (t <= clip.start + 0.02 || t >= clip.start + clip.duration - 0.02) return {};
+      const parts = splitClip(clip, t);
+      if (!parts) return {};
+      const [left, right] = parts;
+      const asset = s.mediaAssets.find((m) => m.id === clip.mediaId);
+      const srcT = asset ? sourceTime(clip, t, asset) : right.trimIn;
+      const hold: Clip = {
+        ...cloneClip(right),
+        id: uid("clip"),
+        name: `${clip.name} (freeze)`,
+        start: t,
+        duration: seconds,
+        trimIn: srcT,
+        freeze: true,
+        reverse: false,
+        speedRamp: undefined,
+        keyframes: {},
+        transitionIn: undefined,
+        linkGroup: undefined,
+        audioDetached: true,
+      };
+      const shifted = { ...right, start: right.start + seconds };
+      // Insert edit: linked partners are split at the playhead too, and everything that
+      // starts at/after the cut on ANY unlocked track moves right by `seconds` so sync is kept.
+      const linkedIds = new Set(expandLinked(s.tracks, [clip.id]));
+      const tracks = s.tracks.map((tr) => {
+        if (tr.locked) return tr;
+        const clips = tr.clips.flatMap((c) => {
+          if (c.id === clip.id) return [left, hold, shifted];
+          if (linkedIds.has(c.id)) {
+            const p = splitClip(c, t);
+            if (!p) return [c];
+            return [p[0], { ...p[1], start: p[1].start + seconds }];
+          }
+          if (c.start >= t - 1e-6) return [{ ...c, start: c.start + seconds }];
+          return [c];
+        });
+        return { ...tr, clips };
+      });
+      return { tracks, selectedClipIds: [hold.id], selectedClipId: hold.id, ...record(s) };
+    }),
+
+  // ── trim tools ──
+  slipClip: (clipId, deltaSource, rec = false) =>
+    set((s) => {
+      const ids = expandLinked(s.tracks, [clipId]);
+      const tracks = mapClips(s.tracks, ids, (c) => {
+        const asset = s.mediaAssets.find((m) => m.id === c.mediaId);
+        if (!asset || asset.type === "image") return c;
+        const span = sourceSpan(c);
+        const trimIn = clamp(c.trimIn + deltaSource, 0, Math.max(0, asset.duration - span));
+        return { ...c, trimIn };
+      });
+      return { tracks, ...(rec ? record(s) : live(s)) };
+    }),
+
+  rollEdit: (clipId, delta, rec = false) =>
+    set((s) => {
+      const found = findClip(s.tracks, clipId);
+      if (!found) return {};
+      const { clip, track } = found;
+      const tol = 1 / s.settings.fps + 1e-3;
+      const next = track.clips.find((c) => c.id !== clip.id && Math.abs(c.start - (clip.start + clip.duration)) <= tol);
+      if (!next) return {};
+      const aAsset = s.mediaAssets.find((m) => m.id === clip.mediaId);
+      const bAsset = s.mediaAssets.find((m) => m.id === next.mediaId);
+      // limits: A can't grow past its media, B can't lose its head past its media start, neither below min length
+      const aMax = aAsset && aAsset.type !== "image" ? durationForSource(clip, aAsset.duration - clip.trimIn) - clip.duration : Infinity;
+      const bMin = bAsset && bAsset.type !== "image" ? -(next.trimIn / (next.speed || 1)) : -Infinity;
+      let d = clamp(delta, Math.max(-(clip.duration - 0.05), bMin), Math.min(next.duration - 0.05, aMax));
+      d = Math.round(d * s.settings.fps) / s.settings.fps;
+      if (Math.abs(d) < 1e-6) return {};
+      const ids = new Set(expandLinked(s.tracks, [clip.id, next.id]));
+      const aLinked = new Set(expandLinked(s.tracks, [clip.id]));
+      const tracks = mapClips(s.tracks, ids, (c) => {
+        if (aLinked.has(c.id)) return { ...c, duration: c.duration + d, keyframes: shiftKeyframes(c.keyframes, 0, c.duration + d) };
+        return { ...c, start: c.start + d, duration: c.duration - d, trimIn: Math.max(0, c.trimIn + d * c.speed), keyframes: shiftKeyframes(c.keyframes, -d, c.duration - d) };
+      });
+      return { tracks, ...(rec ? record(s) : live(s)) };
+    }),
+
+  rippleTrim: (clipId, side, delta, rec = false) =>
+    set((s) => {
+      const found = findClip(s.tracks, clipId);
+      if (!found) return {};
+      const { clip } = found;
+      const asset = s.mediaAssets.find((m) => m.id === clip.mediaId);
+      const isMedia = asset && asset.type !== "image";
+      let d = Math.round(delta * s.settings.fps) / s.settings.fps;
+      if (side === "end") {
+        const max = isMedia ? durationForSource(clip, asset!.duration - clip.trimIn) - clip.duration : Infinity;
+        d = clamp(d, -(clip.duration - 0.05), max);
+      } else {
+        const minBack = isMedia ? -(clip.trimIn / (clip.speed || 1)) : -Infinity;
+        d = clamp(d, Math.max(minBack, -clip.start), clip.duration - 0.05);
+      }
+      if (Math.abs(d) < 1e-6) return {};
+      const ids = new Set(expandLinked(s.tracks, [clip.id]));
+      const edgeTime = side === "end" ? clip.start + clip.duration : clip.start;
+      // Amount by which everything after the edit moves
+      const shift = side === "end" ? d : -d;
+      const tracks = s.tracks.map((tr) => {
+        const touches = tr.clips.some((c) => ids.has(c.id));
+        if (!touches) return tr;
+        const clips = tr.clips.map((c) => {
+          if (ids.has(c.id)) {
+            if (side === "end") return { ...c, duration: c.duration + d, keyframes: shiftKeyframes(c.keyframes, 0, c.duration + d) };
+            return { ...c, start: c.start + d, duration: c.duration - d, trimIn: Math.max(0, c.trimIn + d * c.speed), keyframes: shiftKeyframes(c.keyframes, -d, c.duration - d) };
+          }
+          if (c.start >= edgeTime - 1e-6) return { ...c, start: Math.max(0, c.start + shift) };
+          return c;
+        });
+        return { ...tr, clips };
+      });
+      // when trimming the start, the clip itself also moves back so downstream stays butted — that's handled by start+d above;
+      // but its downstream neighbours must move by -d as well, which `shift` covers.
+      return { tracks, ...(rec ? record(s) : live(s)) };
+    }),
+
+  // ── attribute clipboard ──
+  copyAttributes: (clipId) => {
+    const found = findClip(get().tracks, clipId);
+    if (!found) return;
+    const c = found.clip;
+    set({
+      attributesClipboard: structuredClone({
+        transform: c.transform,
+        effects: c.effects,
+        audio: c.audio,
+        text: c.text,
+        mask: c.mask,
+        chromaKey: c.chromaKey,
+        speed: c.speed,
+        fit: c.fit,
+        blendMode: c.blendMode,
+        cornerRadius: c.cornerRadius,
+        crop: c.crop,
+        keyframes: c.keyframes,
+      }),
+    });
+    get().notify("Attributes copied — select clips and paste attributes (⌥⌘V)", "info");
+  },
+
+  pasteAttributes: (clipIds, parts = { transform: true, effects: true, audio: true, text: true, mask: true, chromaKey: true, speed: false }) =>
+    set((s) => {
+      const src = s.attributesClipboard;
+      if (!src || !clipIds.length) return {};
+      const tracks = mapClips(s.tracks, clipIds, (c) => {
+        const next: Clip = { ...c };
+        if (parts.transform && src.transform) {
+          next.transform = { ...src.transform };
+          next.fit = src.fit ?? c.fit;
+          next.blendMode = src.blendMode ?? c.blendMode;
+          next.cornerRadius = src.cornerRadius ?? c.cornerRadius;
+          next.crop = src.crop ? { ...src.crop } : c.crop;
+          if (src.keyframes) {
+            const k = { ...c.keyframes };
+            for (const p of ["x", "y", "scale", "rotation"] as const) if (src.keyframes[p]) k[p] = scaleKeyframes({ [p]: src.keyframes[p] } as KeyframeMap, 1)[p];
+            next.keyframes = k;
+          }
+        }
+        if (parts.effects && src.effects) {
+          next.effects = { ...src.effects, fadeIn: c.effects.fadeIn, fadeOut: c.effects.fadeOut };
+          if (src.keyframes?.opacity) next.keyframes = { ...next.keyframes, opacity: src.keyframes.opacity };
+        }
+        if (parts.audio && src.audio) next.audio = { ...src.audio, fadeIn: c.audio.fadeIn, fadeOut: c.audio.fadeOut };
+        if (parts.text && src.text && c.kind === "text" && c.text) next.text = { ...src.text, content: c.text.content };
+        if (parts.mask && src.mask !== undefined) next.mask = src.mask ? { ...src.mask } : undefined;
+        if (parts.chromaKey && src.chromaKey !== undefined && c.kind === "media") next.chromaKey = src.chromaKey ? { ...src.chromaKey } : undefined;
+        return next;
+      });
+      return { tracks, ...record(s) };
+    }),
+
   // ── clip movement ──
   moveClips: (clipIds, deltaTime, targetTrackId, rec = false) =>
     set((s) => {
@@ -957,6 +1194,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }),
   removeKeyframe: (clipId, prop, time) =>
     set((s) => ({ tracks: mapClips(s.tracks, [clipId], (c) => ({ ...c, keyframes: removeKeyframeAt(c.keyframes, prop, time) })), ...record(s) })),
+  setKeyframeCurve: (clipId, prop, keyframes) =>
+    set((s) => ({
+      tracks: mapClips(s.tracks, [clipId], (c) => {
+        const next = { ...c.keyframes };
+        if (keyframes && keyframes.length) next[prop] = [...keyframes].sort((a, b) => a.time - b.time);
+        else delete next[prop];
+        return { ...c, keyframes: next };
+      }),
+      ...record(s),
+    })),
   clearKeyframes: (clipId, prop) =>
     set((s) => ({
       tracks: mapClips(s.tracks, [clipId], (c) => {
@@ -1123,6 +1370,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setTool: (t) => set({ tool: t }),
   toggleSafeZones: () => set((s) => ({ showSafeZones: !s.showSafeZones })),
   toggleGrid: () => set((s) => ({ showGrid: !s.showGrid })),
+  setScope: (k) => set({ scope: k }),
   setPreviewQuality: (q) => set({ previewQuality: q }),
   setLeftTab: (t) => set({ leftTab: t, leftPanelOpen: true }),
   setRightTab: (t) => set({ rightTab: t, rightPanelOpen: true }),
