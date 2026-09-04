@@ -9,12 +9,16 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // https://vite.dev/config/
-export default defineConfig({
-  base: '/ForgeNLE/',
+export default defineConfig(({ command }) => ({
+  base: command === "build" ? "/ForgeNLE/" : "/",
   plugins: [react(), tailwindcss(), viteSingleFile()],
+  server: {
+    host: true,
+    allowedHosts: true,
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "src"),
     },
   },
-});
+}));
