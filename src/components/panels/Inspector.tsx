@@ -1,15 +1,15 @@
 import { useEditorStore, RightTab, useSelectedClip } from "../../store/useEditorStore";
-import { AnimProp, BLEND_MODES, Clip, Track, TextAnim, defaultChromaKey, defaultCrop, defaultEffects, defaultMask, defaultTextStyle, defaultTransform } from "../../types";
+import { AnimProp, BLEND_MODES, Clip, Keyframe, Track, TextAnim, defaultChromaKey, defaultCrop, defaultEffects, defaultMask, defaultTextStyle, defaultTransform } from "../../types";
 import { Section, Row, SliderRow, NumberField, Select, Toggle, Segmented, ColorField, Btn, Empty } from "../ui/controls";
 import { FONTS, LOOKS, TRANSITIONS, WEIGHT_LABELS, applyLook, fontWeightsFor, transitionName } from "../../lib/presets";
-import { evaluateClip, hasKeyframes, keyframeAt } from "../../lib/keyframes";
-import { formatTimecode, clamp } from "../../lib/utils";
+import { evaluateClip, hasKeyframes, keyframeAt, rateAt, sourceSpan } from "../../lib/keyframes";
+import { formatTimecode, clamp, uid } from "../../lib/utils";
 import { SlidersHorizontal, Palette, Volume2, Diamond, PanelRightClose, AlignLeft, AlignCenter, AlignRight, Italic, CaseUpper, Link2, Trash2, MousePointerClick, Info, Music4, Scissors, Copy, Pipette, Layers, Activity } from "lucide-react";
 import { cn } from "../../utils/cn";
 import ProjectSettingsPanel from "./ProjectSettingsPanel";
 import KeyframeEditor from "./KeyframeEditor";
-import { useState } from "react";
-import { analyseBeats, decodeForAnalysis, thinBeats, BeatAnalysis } from "../../lib/beats";
+import { useMemo, useState } from "react";
+import { analyseBeats, decodeForAnalysis, thinBeats, BeatAnalysis, LoudnessInfo, measureLoudness, rmsEnvelope, speechRegions } from "../../lib/beats";
 
 const TABS: { id: RightTab; label: string; icon: React.ReactNode }[] = [
   { id: "inspector", label: "Inspector", icon: <SlidersHorizontal size={14} /> },
@@ -242,6 +242,7 @@ function ClipInspector({ clip, track }: { clip: Clip; track: Track }) {
             <Row label="Source in">
               <NumberField value={clip.trimIn} min={0} max={Math.max(0, (asset?.duration ?? 0) - 0.1)} step={0.01} precision={2} unit="s" onChange={(v) => updateClip(clip.id, { trimIn: v }, false)} onCommit={commitHistory} />
             </Row>
+            <TimeRemapSection clip={clip} />
           </>
         )}
         <Row label="Duration">
@@ -319,6 +320,122 @@ const TEXT_ANIMS: { value: TextAnim; label: string }[] = [
   { value: "typewriter", label: "Typewriter" },
   { value: "reveal", label: "Reveal" },
 ];
+
+// ── Time remapping ──────────────────────────────────────────────────────────
+
+const kf = (time: number, value: number): Keyframe => ({ id: uid("kf"), time, value, easing: "ease-in-out" });
+
+const RAMP_PRESETS: { id: string; label: string; hint: string; build: (dur: number) => Keyframe[] }[] = [
+  { id: "speedup", label: "Speed up", hint: "1× → 4×", build: (d) => [kf(0, 1), kf(d, 4)] },
+  { id: "slowdown", label: "Slow down", hint: "1× → ¼×", build: (d) => [kf(0, 1), kf(d, 0.25)] },
+  { id: "punch", label: "Punch-in", hint: "4× → 1× → 4×", build: (d) => [kf(0, 4), kf(d * 0.4, 1), kf(d * 0.6, 1), kf(d, 4)] },
+  { id: "slowmo", label: "Slow-mo hit", hint: "1× → ¼× → 1×", build: (d) => [kf(0, 1), kf(d * 0.35, 0.25), kf(d * 0.65, 0.25), kf(d, 1)] },
+];
+
+function TimeRemapSection({ clip }: { clip: Clip }) {
+  const setClipReverse = useEditorStore((x) => x.setClipReverse);
+  const setClipSpeedRamp = useEditorStore((x) => x.setClipSpeedRamp);
+  const freezeFrameAtPlayhead = useEditorStore((x) => x.freezeFrameAtPlayhead);
+  const currentTime = useEditorStore((x) => x.currentTime);
+  const ramp = clip.speedRamp ?? [];
+  const inside = currentTime > clip.start + 0.02 && currentTime < clip.start + clip.duration - 0.02;
+  const local = currentTime - clip.start;
+  const nowRate = rateAt(clip, Math.max(0, Math.min(clip.duration, local)));
+
+  return (
+    <>
+      <Row label="Direction">
+        <Segmented value={clip.reverse ? "rev" : "fwd"} onChange={(v) => setClipReverse(clip.id, v === "rev")} options={[{ value: "fwd", label: "Forward" }, { value: "rev", label: "Reverse" }]} size="xs" className="w-full" />
+      </Row>
+      {!clip.freeze && (
+        <Row label="Freeze">
+          <Btn variant="ghost" className="w-full" disabled={!inside} onClick={() => freezeFrameAtPlayhead(clip.id, 2)} title="Split at playhead and insert a 2s held frame (⇧F)">
+            Insert freeze frame at playhead
+          </Btn>
+        </Row>
+      )}
+      <Row label="Speed ramp">
+        <div className="flex w-full flex-col gap-1">
+          <div className="grid grid-cols-2 gap-1">
+            {RAMP_PRESETS.map((p) => (
+              <Btn key={p.id} variant="ghost" size="xs" onClick={() => setClipSpeedRamp(clip.id, p.build(clip.duration))} title={p.hint}>
+                {p.label}
+              </Btn>
+            ))}
+          </div>
+          {ramp.length > 0 && (
+            <div className="rounded-md border border-white/5 bg-black/20 p-1.5">
+              <RampGraph clip={clip} local={inside ? local : null} />
+              <div className="mt-1 flex flex-col gap-0.5">
+                {ramp.map((k, i) => (
+                  <div key={i} className="flex items-center gap-1">
+                    <span className="w-10 shrink-0 font-mono text-[10px] text-zinc-500">{k.time.toFixed(2)}s</span>
+                    <NumberField
+                      value={k.value}
+                      min={0.1}
+                      max={8}
+                      step={0.05}
+                      precision={2}
+                      unit="×"
+                      onChange={(v) => setClipSpeedRamp(clip.id, ramp.map((x, j) => (j === i ? { ...x, value: v } : x)))}
+                    />
+                    <button
+                      className="ml-auto rounded px-1 text-[10px] text-zinc-500 hover:bg-white/10 hover:text-red-300"
+                      onClick={() => setClipSpeedRamp(clip.id, ramp.length <= 2 ? undefined : ramp.filter((_, j) => j !== i))}
+                      title="Remove point"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-1 flex items-center justify-between">
+                <Btn
+                  variant="ghost"
+                  size="xs"
+                  disabled={!inside}
+                  onClick={() => {
+                    const t = Math.round(local * 100) / 100;
+                    if (ramp.some((k) => Math.abs(k.time - t) < 0.02)) return;
+                    setClipSpeedRamp(clip.id, [...ramp, kf(t, nowRate)]);
+                  }}
+                >
+                  + Point at playhead
+                </Btn>
+                <span className="font-mono text-[10px] text-amber-300">{inside ? `${nowRate.toFixed(2)}× now` : ""}</span>
+                <Btn variant="ghost" size="xs" onClick={() => setClipSpeedRamp(clip.id, undefined)}>
+                  Clear
+                </Btn>
+              </div>
+            </div>
+          )}
+        </div>
+      </Row>
+    </>
+  );
+}
+
+function RampGraph({ clip, local }: { clip: Clip; local: number | null }) {
+  const W = 220;
+  const H = 44;
+  const n = 60;
+  const pts: string[] = [];
+  const toY = (r: number) => H - (Math.log2(Math.max(0.1, Math.min(8, r))) + 3.33) * (H / 6.33);
+  for (let i = 0; i <= n; i++) {
+    const t = (clip.duration * i) / n;
+    pts.push(`${((i / n) * W).toFixed(1)},${toY(rateAt(clip, t)).toFixed(1)}`);
+  }
+  return (
+    <svg width="100%" viewBox={`0 0 ${W} ${H}`} className="block h-11 w-full">
+      <line x1={0} x2={W} y1={toY(1)} y2={toY(1)} stroke="rgba(255,255,255,0.12)" strokeDasharray="2 3" />
+      <polyline points={pts.join(" ")} fill="none" stroke="#fbbf24" strokeWidth={1.5} />
+      {(clip.speedRamp ?? []).map((k, i) => (
+        <circle key={i} cx={(k.time / clip.duration) * W} cy={toY(k.value)} r={2.5} fill="#fbbf24" />
+      ))}
+      {local !== null && <line x1={(local / clip.duration) * W} x2={(local / clip.duration) * W} y1={0} y2={H} stroke="#f43f5e" strokeWidth={1} />}
+    </svg>
+  );
+}
 
 function TextSection({ clip }: { clip: Clip }) {
   const updateClipText = useEditorStore((s) => s.updateClipText);
@@ -636,11 +753,181 @@ function AudioPanel({ clip, track }: { clip: Clip; track: Track }) {
         <SliderRow label="Fade in" value={a.fadeIn} min={0} max={Math.min(10, clip.duration)} step={0.05} unit="s" defaultValue={0} onChange={(v) => set({ fadeIn: v })} onCommit={commitHistory} />
         <SliderRow label="Fade out" value={a.fadeOut} min={0} max={Math.min(10, clip.duration)} step={0.05} unit="s" defaultValue={0} onChange={(v) => set({ fadeOut: v })} onCommit={commitHistory} />
       </Section>
+      <LoudnessSection clip={clip} track={track} assetUrl={asset.url} />
       <BeatSyncSection clip={clip} assetId={asset.id} assetUrl={asset.url} cached={asset.beats} />
       <Section title={`Track · ${track.name}`}>
         <SliderRow label="Track vol" value={track.volume} min={0} max={200} step={1} unit="%" defaultValue={100} onChange={(v) => setTrackVolume(track.id, v)} />
       </Section>
     </div>
+  );
+}
+
+// ── Loudness: normalize + auto-duck ─────────────────────────────────────────
+
+const decodeMemo = new Map<string, Promise<AudioBuffer>>();
+function decodeMemoised(url: string) {
+  if (!decodeMemo.has(url)) decodeMemo.set(url, decodeForAnalysis(url));
+  return decodeMemo.get(url)!;
+}
+
+function LoudnessSection({ clip, track, assetUrl }: { clip: Clip; track: Track; assetUrl: string }) {
+  const updateClipAudio = useEditorStore((s) => s.updateClipAudio);
+  const setKeyframeCurve = useEditorStore((s) => s.setKeyframeCurve);
+  const notify = useEditorStore((s) => s.notify);
+  const tracks = useEditorStore((s) => s.tracks);
+  const assets = useEditorStore((s) => s.mediaAssets);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [info, setInfo] = useState<LoudnessInfo | null>(null);
+  const [targetDb, setTargetDb] = useState(-18);
+  const [duckDb, setDuckDb] = useState(-14);
+  const [duckSource, setDuckSource] = useState<string>("");
+
+  // Candidate "voice" clips: other audio-producing clips that overlap this one.
+  const candidates = useMemo(() => {
+    const out: { id: string; label: string; clip: Clip; url: string }[] = [];
+    const a0 = clip.start;
+    const a1 = clip.start + clip.duration;
+    for (const t of tracks) {
+      for (const c of t.clips) {
+        if (c.id === clip.id || c.kind !== "media" || c.linkGroup && c.linkGroup === clip.linkGroup) continue;
+        const asset = assets.find((m) => m.id === c.mediaId);
+        if (!asset || asset.type === "image") continue;
+        if (t.type === "video" && (c.audioDetached || asset.hasAudio === false)) continue;
+        if (c.start + c.duration <= a0 || c.start >= a1) continue;
+        out.push({ id: c.id, label: `${c.name} · ${t.name}`, clip: c, url: asset.url });
+      }
+    }
+    return out;
+  }, [tracks, assets, clip]);
+  const duckTarget = candidates.find((c) => c.id === duckSource) ?? candidates[0];
+
+  async function analyse() {
+    setBusy("measure");
+    try {
+      const buf = await decodeMemoised(assetUrl);
+      const span = sourceSpan(clip);
+      const m = measureLoudness(buf, clip.trimIn, clip.trimIn + span);
+      setInfo(m);
+      return m;
+    } catch (e) {
+      notify("Could not decode audio for analysis", "error");
+      return null;
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function normalize() {
+    const m = info ?? (await analyse());
+    if (!m || !isFinite(m.rmsDb)) return;
+    // Aim RMS at target, but never let sample peaks exceed -1 dBFS.
+    let gainDb = targetDb - m.rmsDb;
+    if (isFinite(m.peakDb)) gainDb = Math.min(gainDb, -1 - m.peakDb);
+    const vol = clamp(Math.round(100 * Math.pow(10, gainDb / 20)), 0, 200);
+    updateClipAudio(clip.id, { volume: vol }, true);
+    notify(`Normalized: ${gainDb >= 0 ? "+" : ""}${gainDb.toFixed(1)} dB → volume ${vol}%`, "success");
+  }
+
+  async function autoDuck() {
+    if (!duckTarget) return;
+    setBusy("duck");
+    try {
+      const voiceBuf = await decodeMemoised(duckTarget.url);
+      const v = duckTarget.clip;
+      const env = rmsEnvelope(voiceBuf, 0.05);
+      // Map the voice clip's source range onto the timeline.
+      const regionsSrc = speechRegions(env, -38, 0.35, 0.12);
+      const regions: [number, number][] = [];
+      for (const [s0, s1] of regionsSrc) {
+        if (s1 <= v.trimIn || s0 >= v.trimIn + sourceSpan(v)) continue;
+        const t0 = v.start + Math.max(0, s0 - v.trimIn) / (v.speed || 1);
+        const t1 = v.start + Math.min(sourceSpan(v), s1 - v.trimIn) / (v.speed || 1);
+        regions.push([t0, t1]);
+      }
+      if (!regions.length) {
+        notify("No speech detected in the selected clip", "info");
+        return;
+      }
+      const base = clip.audio.volume;
+      const ducked = Math.max(0, Math.round(base * Math.pow(10, duckDb / 20)));
+      const ramp = 0.25; // seconds
+      const pts: { t: number; v: number }[] = [{ t: 0, v: base }];
+      for (const [t0, t1] of regions) {
+        const l0 = clamp(t0 - clip.start, 0, clip.duration);
+        const l1 = clamp(t1 - clip.start, 0, clip.duration);
+        if (l1 - l0 <= 0.05) continue;
+        pts.push({ t: Math.max(0, l0 - ramp), v: base }, { t: l0, v: ducked }, { t: l1, v: ducked }, { t: Math.min(clip.duration, l1 + ramp), v: base });
+      }
+      pts.push({ t: clip.duration, v: base });
+      // Merge overlapping ramps: keep the lower value where points collide, then dedupe.
+      pts.sort((a, b) => a.t - b.t);
+      const merged: { t: number; v: number }[] = [];
+      for (const p of pts) {
+        const last = merged[merged.length - 1];
+        if (last && Math.abs(last.t - p.t) < 0.03) last.v = Math.min(last.v, p.v);
+        else merged.push({ ...p });
+      }
+      // Drop back-to-back ducked→base→ducked bumps that are shorter than the ramp.
+      const cleaned = merged.filter((p, i) => {
+        if (i === 0 || i === merged.length - 1) return true;
+        const prev = merged[i - 1];
+        const next = merged[i + 1];
+        return !(p.v === base && prev.v === ducked && next.v === ducked && next.t - prev.t < ramp * 2.5);
+      });
+      const keyframes: Keyframe[] = cleaned.map((p) => ({ id: uid("kf"), time: p.t, value: p.v, easing: "ease-in-out" }));
+      setKeyframeCurve(clip.id, "volume", keyframes);
+      notify(`Auto-duck: ${regions.length} speech region${regions.length === 1 ? "" : "s"} → ${keyframes.length} volume keyframes`, "success");
+    } catch (e) {
+      notify("Auto-duck failed to decode audio", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Section title="Loudness" defaultOpen={false}>
+      <div className="mb-2 flex items-center gap-2">
+        <Btn variant="ghost" onClick={analyse} disabled={busy !== null}>
+          {busy === "measure" ? "Measuring…" : "Measure"}
+        </Btn>
+        {info && (
+          <span className="font-mono text-[10px] text-neutral-400">
+            peak {isFinite(info.peakDb) ? info.peakDb.toFixed(1) : "-∞"} dB · RMS {isFinite(info.rmsDb) ? info.rmsDb.toFixed(1) : "-∞"} dB
+          </span>
+        )}
+      </div>
+      <Row label="Target">
+        <NumberField value={targetDb} min={-40} max={-6} step={1} precision={0} unit="dB" onChange={setTargetDb} />
+        <Btn variant="default" onClick={normalize} disabled={busy !== null} title="Set this clip's volume so its RMS hits the target (peaks capped at -1 dBFS)">
+          Normalize
+        </Btn>
+      </Row>
+      {track.type === "audio" && (
+        <>
+          <div className="my-2 h-px bg-white/5" />
+          <Row label="Duck under">
+            {candidates.length ? (
+              <Select value={duckTarget?.id ?? ""} onChange={setDuckSource} options={candidates.map((c) => ({ value: c.id, label: c.label }))} />
+            ) : (
+              <span className="text-[10px] text-neutral-500">No overlapping dialogue clip</span>
+            )}
+          </Row>
+          <Row label="Amount">
+            <NumberField value={duckDb} min={-40} max={-1} step={1} precision={0} unit="dB" onChange={setDuckDb} />
+            <Btn variant="default" onClick={autoDuck} disabled={busy !== null || !duckTarget} title="Detect speech in the chosen clip and keyframe this clip's volume down underneath it">
+              {busy === "duck" ? "Analysing…" : "Auto-duck"}
+            </Btn>
+          </Row>
+          {hasKeyframes(clip, "volume") && (
+            <div className="mt-1 text-right">
+              <Btn variant="ghost" size="xs" onClick={() => setKeyframeCurve(clip.id, "volume", undefined)}>
+                Clear volume keyframes
+              </Btn>
+            </div>
+          )}
+        </>
+      )}
+    </Section>
   );
 }
 

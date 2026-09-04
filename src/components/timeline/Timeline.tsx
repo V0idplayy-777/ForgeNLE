@@ -23,6 +23,9 @@ import {
   Split,
   Undo2,
   Redo2,
+  ChevronsLeftRight,
+  SeparatorVertical,
+  MoveHorizontal,
 } from "lucide-react";
 import { IconBtn } from "../ui/controls";
 import { cn } from "../../utils/cn";
@@ -213,6 +216,15 @@ export default function Timeline() {
             </ToolBtn>
             <ToolBtn active={tool === "razor"} onClick={() => setTool("razor")} title="Razor (C)">
               <Slice size={14} />
+            </ToolBtn>
+            <ToolBtn active={tool === "ripple"} onClick={() => setTool("ripple")} title="Ripple edit (B) — trim an edge and close/open the gap after it">
+              <ChevronsLeftRight size={14} />
+            </ToolBtn>
+            <ToolBtn active={tool === "roll"} onClick={() => setTool("roll")} title="Rolling edit (⇧N) — move the cut between two clips">
+              <SeparatorVertical size={14} />
+            </ToolBtn>
+            <ToolBtn active={tool === "slip"} onClick={() => setTool("slip")} title="Slip (Y) — drag to change which part of the media plays">
+              <MoveHorizontal size={14} />
             </ToolBtn>
             <ToolBtn active={tool === "hand"} onClick={() => setTool("hand")} title="Hand (H)">
               <Hand size={14} />

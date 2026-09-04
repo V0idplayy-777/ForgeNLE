@@ -22,7 +22,9 @@ import {
   Crosshair,
   MonitorPlay,
   Camera,
+  AudioWaveform,
 } from "lucide-react";
+import ScopesPanel from "./ScopesPanel";
 import { IconBtn } from "../ui/controls";
 import { cn } from "../../utils/cn";
 import { exportStill } from "../../lib/exportEngine";
@@ -59,6 +61,8 @@ export default function PreviewPlayer() {
   const toggleSafeZones = useEditorStore((s) => s.toggleSafeZones);
   const showGrid = useEditorStore((s) => s.showGrid);
   const toggleGrid = useEditorStore((s) => s.toggleGrid);
+  const scope = useEditorStore((s) => s.scope);
+  const setScope = useEditorStore((s) => s.setScope);
   const previewQuality = useEditorStore((s) => s.previewQuality);
   const setPreviewQuality = useEditorStore((s) => s.setPreviewQuality);
   const jumpToEdit = useEditorStore((s) => s.jumpToEdit);
@@ -153,9 +157,17 @@ export default function PreviewPlayer() {
   }, [engine, togglePlay]);
 
   useEffect(() => {
-    const unlock = () => engine.ensureAudio();
-    window.addEventListener("pointerdown", unlock, { once: true });
-    window.addEventListener("keydown", unlock, { once: true });
+    // Keep trying on gestures until the context is actually running (autoplay policy).
+    const unlock = () => {
+      engine.ensureAudio();
+      const ctx = engine.audioContext;
+      if (ctx && ctx.state === "running") {
+        window.removeEventListener("pointerdown", unlock);
+        window.removeEventListener("keydown", unlock);
+      }
+    };
+    window.addEventListener("pointerdown", unlock);
+    window.addEventListener("keydown", unlock);
     return () => {
       window.removeEventListener("pointerdown", unlock);
       window.removeEventListener("keydown", unlock);
@@ -210,6 +222,8 @@ export default function PreviewPlayer() {
           </span>
         </div>
       </div>
+
+      <ScopesPanel sourceRef={canvasRef} />
 
       {/* Transport */}
       <div className="flex h-11 shrink-0 items-center gap-1 border-t border-white/5 bg-[#101012] px-3">
@@ -274,6 +288,9 @@ export default function PreviewPlayer() {
           </IconBtn>
           <IconBtn title="Safe zones" active={showSafeZones} onClick={toggleSafeZones}>
             <Crosshair size={14} />
+          </IconBtn>
+          <IconBtn title="Scopes & audio meters (waveform, parade, vectorscope, histogram)" active={!!scope} onClick={() => setScope(scope ? null : "waveform")}>
+            <AudioWaveform size={14} />
           </IconBtn>
           <IconBtn title="Save current frame as PNG" onClick={snapshot}>
             <Camera size={14} />

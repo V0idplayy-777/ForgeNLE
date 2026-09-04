@@ -5,7 +5,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { Clip, MediaAsset, Track } from "../types";
-import { evaluateClip } from "./keyframes";
+import { evaluateClip, rateAt } from "./keyframes";
 import { clipActiveRange, isClipActive, sourceTime, FrameSource } from "./renderer";
 import { clamp, fadeMultiplier } from "./utils";
 
@@ -45,6 +45,9 @@ export class PlaybackEngine {
   private master: GainNode | null = null;
   private opts: EngineOptions;
   private disposed = false;
+  private lastResumeAttempt = 0;
+  private analysers: [AnalyserNode, AnalyserNode] | null = null;
+  private splitter: ChannelSplitterNode | null = null;
 
   constructor(opts: EngineOptions = {}) {
     this.opts = opts;
@@ -57,6 +60,47 @@ export class PlaybackEngine {
 
   get audioContext() {
     return this.ctx;
+  }
+
+  /**
+   * Stereo peak/RMS meters on the master bus. Returns null until audio is live.
+   * Values are linear (0..1+) so callers can convert to dBFS.
+   */
+  meterLevels(): { peak: [number, number]; rms: [number, number] } | null {
+    if (!this.ctx || !this.master) return null;
+    if (!this.analysers) {
+      try {
+        this.splitter = this.ctx.createChannelSplitter(2);
+        const mk = () => {
+          const a = this.ctx!.createAnalyser();
+          a.fftSize = 1024;
+          a.smoothingTimeConstant = 0;
+          return a;
+        };
+        this.analysers = [mk(), mk()];
+        this.master.connect(this.splitter);
+        this.splitter.connect(this.analysers[0], 0);
+        this.splitter.connect(this.analysers[1], 1);
+      } catch {
+        return null;
+      }
+    }
+    const peak: [number, number] = [0, 0];
+    const rms: [number, number] = [0, 0];
+    const buf = new Float32Array(this.analysers[0].fftSize);
+    for (let c = 0; c < 2; c++) {
+      this.analysers[c].getFloatTimeDomainData(buf);
+      let p = 0;
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) {
+        const v = Math.abs(buf[i]);
+        if (v > p) p = v;
+        sum += buf[i] * buf[i];
+      }
+      peak[c] = p;
+      rms[c] = Math.sqrt(sum / buf.length);
+    }
+    return { peak, rms };
   }
 
   /** Must be called from a user gesture (play button) so audio is allowed. */
@@ -88,7 +132,11 @@ export class PlaybackEngine {
       entry.srcNode.connect(entry.panner);
       entry.panner.connect(entry.gain);
       entry.gain.connect(this.master);
+      // A MediaElementAudioSourceNode's output is scaled by the element's own
+      // volume/muted state, so once routed through the graph the element must
+      // be at unity — the per-clip GainNode does the real mixing.
       entry.el.muted = false;
+      entry.el.volume = 1;
     } catch (e) {
       // Element is probably already attached to another context; fall back to element volume.
       console.warn("audio routing failed", e);
@@ -132,11 +180,10 @@ export class PlaybackEngine {
         }
       }
     });
-    // Without WebAudio we must keep the element silent until sync sets volume
+    // Silent until the first sync() computes the real level.
     el.volume = 0;
+    el.muted = true;
     this.attachAudio(entry);
-    // If there's no audio context yet and this is a preview engine, keep muted until ensureAudio.
-    if (!this.ctx && !this.opts.silent) el.muted = true;
     return entry;
   }
 
@@ -252,12 +299,19 @@ export class PlaybackEngine {
   sync(state: MixState, t: number, playing: boolean, rate = 1) {
     if (this.disposed) return;
     const now = performance.now();
+    // Playback was requested (play button / space / JKL) — that always follows a
+    // user gesture, so it's safe to bring the audio graph up here if it's missing.
+    if (playing && !this.ctx && !this.opts.silent) this.ensureAudio();
     const lookahead = this.opts.lookahead ?? 1.5;
     const anyVideoSolo = state.tracks.some((tr) => tr.type === "video" && tr.solo);
     const anyAudioSolo = state.tracks.some((tr) => tr.type === "audio" && tr.solo);
     const used = new Set<string>();
     const masterGain = state.masterMuted ? 0 : state.masterVolume / 100;
     if (this.master) this.master.gain.value = masterGain;
+    if (playing && this.ctx && this.ctx.state === "suspended" && now - this.lastResumeAttempt > 500) {
+      this.lastResumeAttempt = now;
+      this.ctx.resume().catch(() => {});
+    }
 
     for (const track of state.tracks) {
       for (const clip of track.clips) {
@@ -289,15 +343,30 @@ export class PlaybackEngine {
         } else if (entry.gain) {
           entry.gain.gain.setTargetAtTime(vol, this.ctx!.currentTime, 0.015);
           if (entry.panner) entry.panner.pan.value = clamp(clip.audio.pan / 100, -1, 1);
-          el.muted = false;
+          if (el.muted) el.muted = false;
+          if (el.volume !== 1) el.volume = 1;
         } else {
-          el.muted = !this.ctx;
+          // No Web Audio graph for this element: drive the element directly.
           el.volume = clamp(vol * masterGain, 0, 1);
+          el.muted = el.volume <= 0;
         }
         (el as any).preservesPitch = clip.audio.preservesPitch;
 
         // ── time / playback ──
-        const speed = clamp(clip.speed * Math.abs(rate), 0.0625, 16);
+        const remapped = !!clip.reverse || !!clip.freeze || !!(clip.speedRamp && clip.speedRamp.length);
+        const instRate = remapped ? rateAt(clip, local) : clip.speed;
+        const speed = clamp(instRate * Math.abs(rate), 0.0625, 16);
+        if (remapped) {
+          // Browsers can't play media backwards or follow a rate curve natively:
+          // hold the element paused and step it to the exact source time each
+          // frame. Audio is muted in these modes (scrubbing audio would chatter).
+          if (!el.paused) el.pause();
+          if (entry.gain) entry.gain.gain.setTargetAtTime(0, this.ctx!.currentTime, 0.005);
+          else el.volume = 0;
+          const drift = Math.abs(el.currentTime - target);
+          if (drift > (playing ? 0.02 : 0.005) && !el.seeking) this.seekSoft(entry, target);
+          continue;
+        }
         if (playing && active && rate > 0) {
           if (el.playbackRate !== speed) {
             try {

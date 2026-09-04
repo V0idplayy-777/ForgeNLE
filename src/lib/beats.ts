@@ -199,3 +199,78 @@ export function thinBeats(a: BeatAnalysis, every: number): number[] {
   }
   return out;
 }
+
+// ── Loudness / ducking analysis ─────────────────────────────────────────────
+
+export interface LoudnessInfo {
+  /** Sample peak, linear 0..1 */
+  peak: number;
+  /** Overall RMS, linear */
+  rms: number;
+  peakDb: number;
+  rmsDb: number;
+}
+
+export function measureLoudness(buffer: AudioBuffer, startSec = 0, endSec = buffer.duration): LoudnessInfo {
+  const sr = buffer.sampleRate;
+  const s0 = Math.max(0, Math.floor(startSec * sr));
+  const s1 = Math.min(buffer.length, Math.ceil(endSec * sr));
+  let peak = 0;
+  let sum = 0;
+  let n = 0;
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const d = buffer.getChannelData(c);
+    for (let i = s0; i < s1; i++) {
+      const v = d[i];
+      const a = v < 0 ? -v : v;
+      if (a > peak) peak = a;
+      sum += v * v;
+      n++;
+    }
+  }
+  const rms = n ? Math.sqrt(sum / n) : 0;
+  const db = (x: number) => (x <= 0 ? -Infinity : 20 * Math.log10(x));
+  return { peak, rms, peakDb: db(peak), rmsDb: db(rms) };
+}
+
+/**
+ * Short-time RMS envelope (mono) in dBFS at `hop` seconds. Used to find where
+ * a voice-over is speaking so music can be ducked underneath it.
+ */
+export function rmsEnvelope(buffer: AudioBuffer, hop = 0.05): { times: number[]; db: number[] } {
+  const sr = buffer.sampleRate;
+  const hopN = Math.max(1, Math.floor(hop * sr));
+  const chans = Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c));
+  const times: number[] = [];
+  const db: number[] = [];
+  for (let s = 0; s + hopN <= buffer.length; s += hopN) {
+    let sum = 0;
+    for (const d of chans) for (let i = s; i < s + hopN; i++) sum += d[i] * d[i];
+    const r = Math.sqrt(sum / (hopN * chans.length));
+    times.push(s / sr);
+    db.push(r <= 0 ? -100 : 20 * Math.log10(r));
+  }
+  return { times, db };
+}
+
+/**
+ * Turn an envelope into speech regions: contiguous spans above `thresholdDb`,
+ * with gaps shorter than `holdSec` bridged and spans shorter than `minSec` dropped.
+ */
+export function speechRegions(env: { times: number[]; db: number[] }, thresholdDb = -35, holdSec = 0.4, minSec = 0.15): [number, number][] {
+  const out: [number, number][] = [];
+  let start: number | null = null;
+  let lastLoud = -Infinity;
+  for (let i = 0; i < env.times.length; i++) {
+    const t = env.times[i];
+    if (env.db[i] >= thresholdDb) {
+      if (start === null) start = t;
+      lastLoud = t;
+    } else if (start !== null && t - lastLoud > holdSec) {
+      if (lastLoud - start >= minSec) out.push([start, lastLoud]);
+      start = null;
+    }
+  }
+  if (start !== null && lastLoud - start >= minSec) out.push([start, lastLoud]);
+  return out;
+}

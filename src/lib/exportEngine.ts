@@ -144,6 +144,8 @@ async function renderAudioMix(input: ExportInput, rs: number, re: number, sample
       const asset = input.assets.find((a) => a.id === clip.mediaId);
       if (!asset || asset.missing || !clipProducesAudio(track, clip, asset)) continue;
       if (clip.audio.muted) continue;
+      // Reverse / freeze / speed-ramped clips are silent (matches the preview).
+      if (clip.reverse || clip.freeze || (clip.speedRamp && clip.speedRamp.length)) continue;
       const ce = clip.start + clip.duration;
       if (ce <= rs || clip.start >= re) continue;
       count++;
