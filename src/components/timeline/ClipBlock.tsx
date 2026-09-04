@@ -5,7 +5,7 @@ import { clamp, findSnapTargets, snapValue, allClips } from "../../lib/utils";
 import { allKeyframeTimes, hasKeyframes } from "../../lib/keyframes";
 import { transitionName } from "../../lib/presets";
 import { useTimeline } from "./timelineContext";
-import { Scissors, Trash2, Copy, Music4, Type as TypeIcon, Film, Image as ImageIcon, Link2, Unlink2, Square, Diamond, Gauge, AlignStartVertical, Blend, Volume2, Palette, Layers } from "lucide-react";
+import { Scissors, Trash2, Copy, Music4, Type as TypeIcon, Film, Image as ImageIcon, Link2, Unlink2, Square, Diamond, Gauge, AlignStartVertical, Blend, Volume2, Palette, Layers, Snowflake, Rewind, ClipboardCopy, ClipboardPaste } from "lucide-react";
 import { cn } from "../../utils/cn";
 import { CLIP_COLOR_LABELS } from "../../lib/utils";
 
@@ -66,6 +66,8 @@ const Filmstrip = memo(function Filmstrip({ asset, clip, pxPerSec, height }: { a
 
 // ── Clip block ──────────────────────────────────────────────────────────────
 
+type DragMode = "move" | "left" | "right" | "slip" | "roll" | "rippleL" | "rippleR";
+
 interface Props {
   clip: Clip;
   track: Track;
@@ -79,7 +81,7 @@ export default function ClipBlock({ clip, track, height }: Props) {
   const tool = useEditorStore((s) => s.tool);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [colorMenu, setColorMenu] = useState(false);
-  const dragRef = useRef<{ mode: "move" | "left" | "right"; startX: number; startY: number; moved: boolean; orig: Clip; origAll: Clip[]; lastTrackId: string } | null>(null);
+  const dragRef = useRef<{ mode: DragMode; startX: number; startY: number; moved: boolean; orig: Clip; origAll: Clip[]; lastTrackId: string; rollTarget?: string; rollOrigDur?: number } | null>(null);
 
   const left = clip.start * pxPerSec;
   const width = Math.max(clip.duration * pxPerSec, 3);
@@ -90,7 +92,8 @@ export default function ClipBlock({ clip, track, height }: Props) {
   const missing = clip.kind === "media" && (!asset || asset.missing);
 
   // ── drag / trim ──
-  function beginDrag(mode: "move" | "left" | "right", e: React.PointerEvent) {
+  function beginDrag(edge: "move" | "left" | "right", e: React.PointerEvent) {
+    let mode: DragMode = edge;
     if (track.locked || e.button !== 0) return;
     e.stopPropagation();
     // Prevent text selection / native drag from hijacking the pointer sequence.
@@ -101,6 +104,17 @@ export default function ClipBlock({ clip, track, height }: Props) {
       return;
     }
     if (tool === "hand") return;
+    // Trim tools remap the drag mode.
+    let rollTarget: string | undefined;
+    if (tool === "slip") mode = "slip";
+    else if (tool === "ripple") mode = mode === "left" ? "rippleL" : mode === "right" ? "rippleR" : "move";
+    else if (tool === "roll") {
+      if (mode === "right") rollTarget = clip.id;
+      else if (mode === "left") rollTarget = track.clips.find((c) => c.id !== clip.id && Math.abs(c.start + c.duration - clip.start) <= 1 / fps + 1e-3)?.id;
+      else return;
+      if (!rollTarget) return;
+      mode = "roll";
+    }
     if (!s.selectedClipIds.includes(clip.id)) s.selectClip(clip.id, e.shiftKey || e.metaKey || e.ctrlKey);
     else if (e.shiftKey || e.metaKey || e.ctrlKey) {
       s.selectClip(clip.id, true);
@@ -119,6 +133,7 @@ export default function ClipBlock({ clip, track, height }: Props) {
       orig: clip,
       origAll: all.filter((c) => sel.has(c.id)),
       lastTrackId: track.id,
+      rollTarget,
     };
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
     window.addEventListener("pointermove", onMove);
@@ -138,6 +153,51 @@ export default function ClipBlock({ clip, track, height }: Props) {
     const snapOn = s.snapping !== e.altKey;
     const targets = snapOn ? findSnapTargets(s.tracks, s.markers, [s.currentTime], selIds) : [];
 
+    if (d.mode === "slip") {
+      // Slip: keep position & length, scrub the source underneath (drag right = earlier media, like Premiere).
+      const o = d.orig;
+      const want = Math.round(-dx * fps) / fps;
+      const cur = allClips(s.tracks).find((c) => c.id === o.id);
+      if (!cur) return;
+      const applied = (cur.trimIn - o.trimIn) / (o.speed || 1);
+      if (Math.abs(want - applied) > 1e-6) s.slipClip(o.id, (want - applied) * (o.speed || 1), false);
+      return;
+    }
+    if (d.mode === "roll") {
+      const targetId = d.rollTarget ?? d.orig.id;
+      const tgt = allClips(s.tracks).find((c) => c.id === targetId);
+      const tgtOrig = d.rollTarget && d.rollTarget !== d.orig.id ? tgt : d.orig;
+      if (!tgt || !tgtOrig) return;
+      // desired total delta vs what's actually applied (store clamps to media limits)
+      const origDur = d.rollOrigDur ?? (d.rollOrigDur = tgt.duration);
+      let want = dx;
+      if (snapOn) {
+        const r = snapValue(tgt.start + origDur + dx, targets, threshold);
+        want = r.value - tgt.start - origDur;
+        setSnapLine(r.snapped);
+      }
+      want = Math.round(want * fps) / fps;
+      const applied = tgt.duration - origDur;
+      if (Math.abs(want - applied) > 1e-6) s.rollEdit(targetId, want - applied, false);
+      return;
+    }
+    if (d.mode === "rippleL" || d.mode === "rippleR") {
+      const o = d.orig;
+      const cur = allClips(s.tracks).find((c) => c.id === o.id);
+      if (!cur) return;
+      const side = d.mode === "rippleL" ? "start" : "end";
+      let want = dx;
+      if (snapOn) {
+        const edge = side === "start" ? o.start : o.start + o.duration;
+        const r = snapValue(edge + dx, targets, threshold);
+        want = r.value - edge;
+        setSnapLine(r.snapped);
+      }
+      want = Math.round(want * fps) / fps;
+      const applied = side === "start" ? cur.start - o.start : cur.duration - o.duration;
+      if (Math.abs(want - applied) > 1e-6) s.rippleTrim(o.id, side, want - applied, false);
+      return;
+    }
     if (d.mode === "move") {
       const minStart = Math.min(...d.origAll.map((c) => c.start));
       let delta = Math.max(dx, -minStart);
@@ -234,7 +294,7 @@ export default function ClipBlock({ clip, track, height }: Props) {
     setSnapLine(null);
     const s = useEditorStore.getState();
     if (d?.moved) {
-      s.resolveOverlaps(d.origAll.map((c) => c.id));
+      if (d.mode === "move" || d.mode === "left" || d.mode === "right") s.resolveOverlaps(d.origAll.map((c) => c.id));
       s.commitHistory();
     }
   }
@@ -267,6 +327,7 @@ export default function ClipBlock({ clip, track, height }: Props) {
         selected ? "z-10 shadow-[0_0_0_1.5px_#fff,0_0_0_3px_rgba(99,102,241,0.7)]" : "shadow-[0_0_0_1px_rgba(0,0,0,0.6)]",
         track.locked && "opacity-60",
         tool === "razor" && "cursor-[crosshair]",
+        tool === "slip" && "cursor-ew-resize",
         missing && "outline outline-1 outline-red-500"
       )}
       style={{ left, width, background: isAudioTrack ? `linear-gradient(180deg, ${clip.color}55, ${clip.color}33)` : `linear-gradient(180deg, ${clip.color}cc, ${clip.color}88)` }}
@@ -304,7 +365,14 @@ export default function ClipBlock({ clip, track, height }: Props) {
         <div className="flex min-w-0 items-center gap-1 rounded bg-black/35 px-1 py-px backdrop-blur-[2px]">
           <Icon size={10} className="shrink-0 opacity-90" />
           <span className="truncate text-[10px] font-medium leading-4">{clip.name}</span>
-          {clip.speed !== 1 && <span className="shrink-0 font-mono text-[9px] text-amber-300">{clip.speed}×</span>}
+          {clip.freeze ? (
+            <span className="shrink-0 font-mono text-[9px] text-sky-300">FREEZE</span>
+          ) : clip.speedRamp && clip.speedRamp.length ? (
+            <span className="shrink-0 font-mono text-[9px] text-amber-300">RAMP</span>
+          ) : clip.speed !== 1 ? (
+            <span className="shrink-0 font-mono text-[9px] text-amber-300">{clip.speed}×</span>
+          ) : null}
+          {clip.reverse && <span className="shrink-0 font-mono text-[9px] text-fuchsia-300">◀ REV</span>}
           {linked && <Link2 size={9} className="shrink-0 opacity-70" />}
           {hasKeyframes(clip) && <Diamond size={8} className="shrink-0 fill-amber-300 text-amber-300" />}
           {clip.blendMode !== "source-over" && <Blend size={9} className="shrink-0 opacity-80" />}
@@ -323,7 +391,7 @@ export default function ClipBlock({ clip, track, height }: Props) {
       )}
 
       {/* trim handles */}
-      {!track.locked && tool === "select" && (
+      {!track.locked && (tool === "select" || tool === "ripple" || tool === "roll") && (
         <>
           <div onPointerDown={(e) => beginDrag("left", e)} className="absolute left-0 top-0 z-10 h-full w-2 cursor-ew-resize opacity-0 transition-opacity group-hover:opacity-100">
             <div className="ml-0.5 mt-[25%] h-1/2 w-1 rounded-full bg-white/90" />
@@ -362,6 +430,15 @@ function ClipContextMenu({ clip, track, x, y, onClose, colorMenu, setColorMenu }
         <MenuItem icon={<Copy size={12} />} label="Duplicate" kbd="⌘D" onClick={run(() => s.duplicateClips(sel))} />
         <div className="my-1 h-px bg-white/5" />
         <MenuItem icon={<Gauge size={12} />} label="Speed / duration…" onClick={run(() => { s.setRightTab("inspector"); })} />
+        {clip.kind === "media" && track.type === "video" && !clip.freeze && (
+          <>
+            <MenuItem icon={<Snowflake size={12} />} label="Add freeze frame (2s)" kbd="⇧F" onClick={run(() => s.freezeFrameAtPlayhead(clip.id, 2))} />
+            <MenuItem icon={<Rewind size={12} />} label={clip.reverse ? "Play forwards" : "Reverse clip"} onClick={run(() => s.setClipReverse(clip.id, !clip.reverse))} />
+          </>
+        )}
+        <div className="my-1 h-px bg-white/5" />
+        <MenuItem icon={<ClipboardCopy size={12} />} label="Copy attributes" kbd="⌥⌘C" onClick={run(() => s.copyAttributes(clip.id))} />
+        {s.attributesClipboard && <MenuItem icon={<ClipboardPaste size={12} />} label="Paste attributes" kbd="⌥⌘V" onClick={run(() => s.pasteAttributes(sel))} />}
         {sel.length > 1 && <MenuItem icon={<Link2 size={12} />} label="Link clips" kbd="⌘L" onClick={run(() => s.linkClips(sel))} />}
         {linkedCount > 1 && <MenuItem icon={<Unlink2 size={12} />} label="Unlink" onClick={run(() => s.unlinkClips([clip.id]))} />}
         {canDetach && <MenuItem icon={<Music4 size={12} />} label="Detach audio" onClick={run(() => s.detachAudio(clip.id))} />}

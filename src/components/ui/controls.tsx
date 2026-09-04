@@ -461,7 +461,7 @@ export function Btn({
   className?: string;
   disabled?: boolean;
   title?: string;
-  size?: "sm" | "md";
+  size?: "xs" | "sm" | "md";
 }) {
   return (
     <button
@@ -470,7 +470,7 @@ export function Btn({
       title={title}
       className={cn(
         "inline-flex items-center justify-center gap-1.5 rounded-md font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40",
-        size === "sm" ? "h-7 px-2.5 text-[11px]" : "h-9 px-4 text-xs",
+        size === "xs" ? "h-6 px-2 text-[10px]" : size === "sm" ? "h-7 px-2.5 text-[11px]" : "h-9 px-4 text-xs",
         variant === "default" && "border border-white/10 bg-white/[0.05] text-neutral-200 hover:bg-white/[0.1]",
         variant === "primary" && "bg-indigo-500 text-white shadow-lg shadow-indigo-500/20 hover:bg-indigo-400",
         variant === "ghost" && "text-neutral-400 hover:bg-white/5 hover:text-white",

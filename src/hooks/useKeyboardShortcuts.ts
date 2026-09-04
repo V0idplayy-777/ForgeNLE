@@ -89,7 +89,8 @@ export function useKeyboardShortcuts(handlers: Handlers = {}) {
             return;
           case "c":
             e.preventDefault();
-            s.copySelected();
+            if (e.altKey && sel.length) s.copyAttributes(sel[0]);
+            else s.copySelected();
             return;
           case "x":
             e.preventDefault();
@@ -97,7 +98,8 @@ export function useKeyboardShortcuts(handlers: Handlers = {}) {
             return;
           case "v":
             e.preventDefault();
-            s.pasteClipboard();
+            if (e.altKey) s.pasteAttributes(sel);
+            else s.pasteClipboard();
             return;
           case "a":
             e.preventDefault();
@@ -212,9 +214,6 @@ export function useKeyboardShortcuts(handlers: Handlers = {}) {
         case "m":
           s.addMarker();
           return;
-        case "n":
-          s.toggleSnapping();
-          return;
         case "r":
           s.toggleRipple();
           return;
@@ -226,6 +225,16 @@ export function useKeyboardShortcuts(handlers: Handlers = {}) {
           return;
         case "h":
           s.setTool("hand");
+          return;
+        case "y":
+          s.setTool("slip");
+          return;
+        case "n":
+          if (e.shiftKey) s.setTool("roll");
+          else s.toggleSnapping();
+          return;
+        case "b":
+          s.setTool("ripple");
           return;
         case "=":
         case "+":
@@ -260,6 +269,10 @@ export function useKeyboardShortcuts(handlers: Handlers = {}) {
           return;
         case "f": {
           e.preventDefault();
+          if (e.shiftKey) {
+            if (sel.length) s.freezeFrameAtPlayhead(sel[0], 2);
+            return;
+          }
           const stage = document.querySelector("[data-preview-stage]") as HTMLElement | null;
           if (stage) {
             if (document.fullscreenElement) document.exitFullscreen();

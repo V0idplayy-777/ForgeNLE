@@ -130,3 +130,56 @@ export function scaleKeyframes(map: KeyframeMap, factor: number): KeyframeMap {
   }
   return out;
 }
+
+// ── Time remapping ──────────────────────────────────────────────────────────
+
+/** Instantaneous playback rate at clip-local time (respects speed ramps). */
+export function rateAt(clip: Clip, local: number): number {
+  if (clip.freeze) return 0;
+  const ramp = clip.speedRamp;
+  if (ramp && ramp.length) return Math.max(0.05, evaluateKeyframes(ramp, local, clip.speed));
+  return clip.speed;
+}
+
+/**
+ * Source seconds consumed between clip-local 0 and `local`. For a plain speed
+ * this is local*speed; for a ramp we integrate the (eased) rate curve numerically
+ * with a fixed small step so preview and export agree exactly.
+ */
+export function sourceOffsetAt(clip: Clip, local: number): number {
+  if (clip.freeze) return 0;
+  const ramp = clip.speedRamp;
+  if (!ramp || !ramp.length) return local * clip.speed;
+  const step = 1 / 120;
+  let acc = 0;
+  let t = 0;
+  while (t + step <= local) {
+    // midpoint rule
+    acc += rateAt(clip, t + step / 2) * step;
+    t += step;
+  }
+  if (local > t) acc += rateAt(clip, (t + local) / 2) * (local - t);
+  return acc;
+}
+
+/** Total source seconds the clip covers at its current duration. */
+export function sourceSpan(clip: Clip): number {
+  return sourceOffsetAt(clip, clip.duration);
+}
+
+/** Timeline duration needed to play `sourceSeconds` of media under this clip's rate curve. */
+export function durationForSource(clip: Clip, sourceSeconds: number): number {
+  if (clip.freeze) return clip.duration;
+  const ramp = clip.speedRamp;
+  if (!ramp || !ramp.length) return sourceSeconds / clip.speed;
+  const step = 1 / 120;
+  let acc = 0;
+  let t = 0;
+  for (let i = 0; i < 100000; i++) {
+    const r = rateAt(clip, t + step / 2);
+    if (acc + r * step >= sourceSeconds) return t + (sourceSeconds - acc) / r;
+    acc += r * step;
+    t += step;
+  }
+  return t;
+}

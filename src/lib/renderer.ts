@@ -4,7 +4,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { Clip, MediaAsset, ProjectSettings, TextStyle, Track, Transition, TransitionType } from "../types";
-import { evaluateClip, ease } from "./keyframes";
+import { evaluateClip, ease, sourceOffsetAt, sourceSpan } from "./keyframes";
 import { clamp, contain, cover, cssFilterString, fadeMultiplier, hexToRgba, previousAdjacentClip, Rect } from "./utils";
 
 export type FrameSource = HTMLVideoElement | HTMLImageElement | HTMLCanvasElement | ImageBitmap | OffscreenCanvas;
@@ -71,9 +71,16 @@ export function isClipActive(clip: Clip, t: number) {
 
 /** Source (media) time for a clip at timeline time t. */
 export function sourceTime(clip: Clip, t: number, asset?: MediaAsset) {
-  const local = t - clip.start;
-  const st = clip.trimIn + local * clip.speed;
+  const local = clamp(t - clip.start, 0, clip.duration);
   const max = asset?.duration ?? Infinity;
+  const offset = sourceOffsetAt(clip, local);
+  let st: number;
+  if (clip.reverse) {
+    // Reverse plays from the end of the covered span back towards trimIn.
+    st = clip.trimIn + sourceSpan(clip) - offset;
+  } else {
+    st = clip.trimIn + offset;
+  }
   return clamp(st, 0, isFinite(max) ? Math.max(0, max - 0.001) : st);
 }
 

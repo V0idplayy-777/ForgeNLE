@@ -337,6 +337,16 @@ export interface Clip {
   duration: number; // timeline length (s)
   trimIn: number; // in-point inside source media (s, source time)
   speed: number; // 0.1 .. 8
+  /** Play the source backwards (source time runs from the out-point to the in-point). */
+  reverse?: boolean;
+  /** Freeze frame: source time is pinned to trimIn for the whole clip. */
+  freeze?: boolean;
+  /**
+   * Speed ramp: keyframes on playback rate (value = speed multiplier) in clip-local
+   * seconds. When present, `speed` is ignored and source time is the integral of the
+   * rate curve — like Premiere's Time Remapping.
+   */
+  speedRamp?: Keyframe[];
   effects: ClipEffects;
   transform: Transform;
   crop: Crop;
@@ -400,7 +410,7 @@ export const RESOLUTION_PRESETS: { label: string; width: number; height: number;
   { label: "Portrait · 4:5", width: 1080, height: 1350, group: "Social" },
 ];
 
-export type ToolMode = "select" | "razor" | "hand";
+export type ToolMode = "select" | "razor" | "hand" | "slip" | "roll" | "ripple";
 
 export interface ExportSettings {
   width: number;
