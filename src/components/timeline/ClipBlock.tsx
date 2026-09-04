@@ -5,7 +5,7 @@ import { clamp, findSnapTargets, snapValue, allClips } from "../../lib/utils";
 import { allKeyframeTimes, hasKeyframes } from "../../lib/keyframes";
 import { transitionName } from "../../lib/presets";
 import { useTimeline } from "./timelineContext";
-import { Scissors, Trash2, Copy, Music4, Type as TypeIcon, Film, Image as ImageIcon, Link2, Unlink2, Square, Diamond, Gauge, AlignStartVertical, Blend, Volume2, Palette } from "lucide-react";
+import { Scissors, Trash2, Copy, Music4, Type as TypeIcon, Film, Image as ImageIcon, Link2, Unlink2, Square, Diamond, Gauge, AlignStartVertical, Blend, Volume2, Palette, Layers } from "lucide-react";
 import { cn } from "../../utils/cn";
 import { CLIP_COLOR_LABELS } from "../../lib/utils";
 
@@ -84,7 +84,7 @@ export default function ClipBlock({ clip, track, height }: Props) {
   const left = clip.start * pxPerSec;
   const width = Math.max(clip.duration * pxPerSec, 3);
   const isAudioTrack = track.type === "audio";
-  const Icon = clip.kind === "text" ? TypeIcon : clip.kind === "solid" ? Square : isAudioTrack ? Music4 : asset?.type === "image" ? ImageIcon : Film;
+  const Icon = clip.kind === "text" ? TypeIcon : clip.kind === "solid" ? Square : clip.kind === "adjustment" ? Layers : isAudioTrack ? Music4 : asset?.type === "image" ? ImageIcon : Film;
   const linked = !!clip.linkGroup;
   const kfTimes = useMemo(() => allKeyframeTimes(clip.keyframes), [clip.keyframes]);
   const missing = clip.kind === "media" && (!asset || asset.missing);
@@ -280,6 +280,8 @@ export default function ClipBlock({ clip, track, height }: Props) {
         <div className="absolute inset-0 opacity-60" style={{ backgroundImage: `url(${asset.thumbnail})`, backgroundRepeat: "repeat-x", backgroundSize: "auto 100%" }} />
       ) : clip.kind === "solid" && clip.solid ? (
         <div className="absolute inset-0 opacity-70" style={{ background: clip.solid.gradient ? `linear-gradient(${clip.solid.gradient.angle}deg, ${clip.solid.gradient.from}, ${clip.solid.gradient.to})` : clip.solid.color }} />
+      ) : clip.kind === "adjustment" ? (
+        <div className="absolute inset-0 bg-[repeating-linear-gradient(135deg,transparent_0_6px,rgba(255,255,255,0.12)_6px_12px)]" />
       ) : null}
 
       {/* fades */}

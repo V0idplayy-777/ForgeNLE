@@ -346,12 +346,202 @@ export function renderFrame(ctx: CanvasRenderingContext2D, rc: RenderContext, t:
           ctx.fillRect(0, 0, W, H);
           ctx.restore();
         }
+      } else if (clip.kind === "adjustment") {
+        drawAdjustment(ctx, clip, t, W, H);
       } else {
         drawClip(ctx, rc, clip, t);
       }
     }
   }
   ctx.restore();
+}
+
+/**
+ * Adjustment layer: grabs everything composited so far and re-draws it through
+ * the layer's colour pipeline (filters, temperature/tint, vignette), limited to
+ * the layer's mask and faded by its opacity. Works like Premiere/Resolve
+ * adjustment layers — put a grade above a whole sequence in one clip.
+ */
+function drawAdjustment(ctx: CanvasRenderingContext2D, clip: Clip, t: number, W: number, H: number) {
+  const local = t - clip.start;
+  const anim = evaluateClip(clip, local);
+  const fade = fadeMultiplier(clip.effects.fadeIn, clip.effects.fadeOut, local, clip.duration);
+  const alpha = clamp((anim.opacity / 100) * fade, 0, 1);
+  if (alpha <= 0) return;
+  const cw = ctx.canvas.width;
+  const ch = ctx.canvas.height;
+  // Snapshot of what's beneath (device pixels)
+  const snap = getScratch(2, cw, ch);
+  const sctx = snap.getContext("2d")!;
+  sctx.setTransform(1, 0, 0, 1, 0, 0);
+  sctx.globalCompositeOperation = "source-over";
+  sctx.globalAlpha = 1;
+  sctx.filter = "none";
+  sctx.clearRect(0, 0, cw, ch);
+  sctx.drawImage(ctx.canvas, 0, 0);
+
+  // Graded version
+  const graded = getScratch(3, cw, ch);
+  const gctx = graded.getContext("2d")!;
+  gctx.setTransform(1, 0, 0, 1, 0, 0);
+  gctx.globalCompositeOperation = "source-over";
+  gctx.globalAlpha = 1;
+  gctx.clearRect(0, 0, cw, ch);
+  const dpr = cw / W;
+  gctx.filter = cssFilterString(clip.effects).replace(/blur\(([\d.]+)px\)/, (_m, px) => `blur(${Number(px) * dpr}px)`);
+  gctx.drawImage(snap, 0, 0);
+  gctx.filter = "none";
+  gctx.save();
+  gctx.scale(dpr, dpr);
+  gctx.translate(W / 2, H / 2);
+  applyColorOverlays(gctx, clip, { x: -W / 2, y: -H / 2, w: W, h: H });
+  gctx.restore();
+
+  // Mask (if any) in project space
+  const mask = clip.mask;
+  if (mask && mask.shape !== "none") {
+    gctx.save();
+    gctx.setTransform(1, 0, 0, 1, 0, 0);
+    gctx.scale(dpr, dpr);
+    gctx.globalCompositeOperation = "destination-in";
+    drawMaskShape(gctx, mask, W, H, anim);
+    gctx.restore();
+  }
+
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = alpha;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.drawImage(graded, 0, 0);
+  ctx.restore();
+}
+
+/**
+ * Paints the mask coverage (white = keep) for a clip, in project-space
+ * coordinates, using a feathered gradient / shadow blur for soft edges.
+ * Expects the ctx already scaled to project space with origin at top-left.
+ */
+function drawMaskShape(ctx: CanvasRenderingContext2D, mask: import("../types").ClipMask, W: number, H: number, anim: { x: number; y: number; scale: number; rotation: number }) {
+  const mw = Math.max(1, (mask.width / 100) * W);
+  const mh = Math.max(1, (mask.height / 100) * H);
+  const feather = Math.max(0, mask.feather);
+
+  // Same order as the clip's own transform so the mask travels with the content.
+  const paint = (target: CanvasRenderingContext2D) => {
+    target.save();
+    target.translate(W / 2 + anim.x, H / 2 + anim.y);
+    target.rotate((anim.rotation * Math.PI) / 180);
+    target.scale(anim.scale, anim.scale);
+    target.translate((mask.x / 100) * W, (mask.y / 100) * H);
+    target.rotate((mask.rotation * Math.PI) / 180);
+    target.beginPath();
+    if (mask.shape === "ellipse") target.ellipse(0, 0, mw / 2, mh / 2, 0, 0, Math.PI * 2);
+    else roundRectPath(target, -mw / 2, -mh / 2, mw, mh, mask.cornerRadius);
+    target.fillStyle = "#fff";
+    target.fill();
+    target.restore();
+  };
+
+  if (mask.invert) {
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = "destination-out";
+  }
+  if (feather > 0) {
+    // Draw the shape offscreen with a blur filter for a soft edge.
+    const dpr = ctx.getTransform().a || 1;
+    const layer = getScratch(4, Math.round(W * dpr), Math.round(H * dpr));
+    const lctx = layer.getContext("2d")!;
+    lctx.setTransform(1, 0, 0, 1, 0, 0);
+    lctx.clearRect(0, 0, layer.width, layer.height);
+    lctx.filter = `blur(${feather * dpr * 0.5}px)`;
+    lctx.scale(dpr, dpr);
+    lctx.globalCompositeOperation = "source-over";
+    paint(lctx);
+    lctx.filter = "none";
+    ctx.drawImage(layer, 0, 0, layer.width, layer.height, 0, 0, W, H);
+  } else {
+    paint(ctx);
+  }
+}
+
+// ── Chroma key ──────────────────────────────────────────────────────────────
+
+let keyCanvas: HTMLCanvasElement | null = null;
+
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace("#", "");
+  const n = parseInt(h.length === 3 ? h.split("").map((c) => c + c).join("") : h, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/**
+ * Returns a keyed copy of the source (transparent where the key colour matches).
+ * Works in a YCbCr-ish chroma distance so luminance differences (shadows on a
+ * green screen) don't break the key. Processes at reduced resolution for speed.
+ */
+function chromaKeySource(src: CanvasImageSource, sw: number, sh: number, key: import("../types").ChromaKey, maxW: number): HTMLCanvasElement | null {
+  const scale = Math.min(1, maxW / sw);
+  const w = Math.max(1, Math.round(sw * scale));
+  const h = Math.max(1, Math.round(sh * scale));
+  if (!keyCanvas) keyCanvas = document.createElement("canvas");
+  if (keyCanvas.width !== w || keyCanvas.height !== h) {
+    keyCanvas.width = w;
+    keyCanvas.height = h;
+  }
+  const kctx = keyCanvas.getContext("2d", { willReadFrequently: true })!;
+  kctx.clearRect(0, 0, w, h);
+  try {
+    kctx.drawImage(src, 0, 0, w, h);
+  } catch {
+    return null;
+  }
+  let img: ImageData;
+  try {
+    img = kctx.getImageData(0, 0, w, h);
+  } catch {
+    return null; // tainted canvas
+  }
+  const d = img.data;
+  const [kr, kg, kb] = hexToRgb(key.color);
+  // chroma components of the key colour
+  const kcb = -0.169 * kr - 0.331 * kg + 0.5 * kb;
+  const kcr = 0.5 * kr - 0.419 * kg - 0.081 * kb;
+  const tol = (key.similarity / 100) * 120; // distance at which a pixel is fully keyed
+  const soft = Math.max(1, (key.smoothness / 100) * 120); // width of the ramp
+  const spill = key.spill / 100;
+  const isGreen = kg > kr && kg > kb;
+  const isBlue = kb > kr && kb > kg;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i];
+    const g = d[i + 1];
+    const b = d[i + 2];
+    const cb = -0.169 * r - 0.331 * g + 0.5 * b;
+    const cr = 0.5 * r - 0.419 * g - 0.081 * b;
+    const dist = Math.hypot(cb - kcb, cr - kcr);
+    let a = (dist - tol) / soft; // 0 = keyed, 1 = kept
+    if (a <= 0) {
+      d[i + 3] = 0;
+      continue;
+    }
+    if (a < 1) d[i + 3] = Math.round(d[i + 3] * a);
+    // spill suppression on remaining pixels near the key hue
+    if (spill > 0 && a < 2) {
+      const amt = spill * (1 - Math.min(1, a / 2));
+      if (isGreen) {
+        const lim = (r + b) / 2;
+        if (g > lim) d[i + 1] = Math.round(g - (g - lim) * amt);
+      } else if (isBlue) {
+        const lim = (r + g) / 2;
+        if (b > lim) d[i + 2] = Math.round(b - (b - lim) * amt);
+      } else {
+        const lim = (g + b) / 2;
+        if (r > lim) d[i] = Math.round(r - (r - lim) * amt);
+      }
+    }
+  }
+  kctx.putImageData(img, 0, 0);
+  return keyCanvas;
 }
 
 interface DrawMods {
@@ -409,9 +599,45 @@ function drawClip(ctx: CanvasRenderingContext2D, rc: RenderContext, clip: Clip, 
 
   let drawnRect: Rect | null = null;
 
+  // Shape mask: clip the drawing region (in clip space, before content transform
+  // so the mask travels with position/scale/rotation animation).
+  const mask = clip.mask;
+  const hasMask = !!mask && mask.shape !== "none";
+  let maskLayer: CanvasRenderingContext2D | null = null;
+  if (hasMask && mask!.feather <= 0 && !mask!.invert) {
+    // Hard-edged: a plain clip path is cheapest.
+    const mw = (mask!.width / 100) * W;
+    const mh = (mask!.height / 100) * H;
+    target.save();
+    target.translate((mask!.x / 100) * W, (mask!.y / 100) * H);
+    target.rotate((mask!.rotation * Math.PI) / 180);
+    target.beginPath();
+    if (mask!.shape === "ellipse") target.ellipse(0, 0, mw / 2, mh / 2, 0, 0, Math.PI * 2);
+    else roundRectPath(target, -mw / 2, -mh / 2, mw, mh, mask!.cornerRadius);
+    target.restore();
+    target.clip();
+  } else if (hasMask) {
+    // Soft / inverted: render content to its own layer and multiply by mask coverage.
+    maskLayer = getScratch(1, ctx.canvas.width, ctx.canvas.height).getContext("2d")!;
+    maskLayer.setTransform(1, 0, 0, 1, 0, 0);
+    maskLayer.globalCompositeOperation = "source-over";
+    maskLayer.globalAlpha = 1;
+    maskLayer.filter = "none";
+    maskLayer.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    maskLayer.setTransform(target.getTransform());
+  }
+  const out: CanvasRenderingContext2D = maskLayer ?? target;
+
   if (clip.kind === "media") {
-    const src = rc.getSource(clip);
-    const size = sourceSize(src);
+    let src = rc.getSource(clip);
+    let size = sourceSize(src);
+    if (src && size && clip.chromaKey?.enabled) {
+      const keyed = chromaKeySource(src as CanvasImageSource, size.w, size.h, clip.chromaKey, Math.min(size.w, Math.max(640, W)));
+      if (keyed) {
+        src = keyed;
+        size = { w: keyed.width, h: keyed.height };
+      }
+    }
     if (src && size) {
       const r = contentRect(clip, size.w, size.h, W, H);
       const cl = clip.crop.left / 100;
@@ -428,38 +654,56 @@ function drawClip(ctx: CanvasRenderingContext2D, rc: RenderContext, clip: Clip, 
       const dh = r.h * (1 - ct - cb);
       drawnRect = { x: dx, y: dy, w: dw, h: dh };
       if (swp > 0 && shp > 0 && dw > 0 && dh > 0) {
-        target.save();
+        out.save();
         if (clip.cornerRadius > 0) {
-          target.beginPath();
-          roundRectPath(target, dx, dy, dw, dh, Math.min(clip.cornerRadius, dw / 2, dh / 2));
-          target.clip();
+          out.beginPath();
+          roundRectPath(out, dx, dy, dw, dh, Math.min(clip.cornerRadius, dw / 2, dh / 2));
+          out.clip();
         }
-        target.filter = filter;
+        out.filter = filter;
         try {
-          target.drawImage(src as CanvasImageSource, sxp, syp, swp, shp, dx, dy, dw, dh);
+          out.drawImage(src as CanvasImageSource, sxp, syp, swp, shp, dx, dy, dw, dh);
         } catch {
           /* source not ready */
         }
-        target.filter = "none";
-        target.restore();
+        out.filter = "none";
+        out.restore();
       }
     } else {
       // Placeholder while loading
       drawnRect = { x: -W / 2, y: -H / 2, w: W, h: H };
     }
   } else if (clip.kind === "text" && clip.text) {
-    target.filter = filter;
-    drawnRect = drawText(target, clip, local, W, H);
-    target.filter = "none";
+    out.filter = filter;
+    drawnRect = drawText(out, clip, local, W, H);
+    out.filter = "none";
   } else if (clip.kind === "solid" && clip.solid) {
-    target.filter = filter;
-    drawnRect = drawSolid(target, clip, W, H);
-    target.filter = "none";
+    out.filter = filter;
+    drawnRect = drawSolid(out, clip, W, H);
+    out.filter = "none";
   }
 
   // Color overlays constrained to drawn content
   if (drawnRect && needsLayer) {
-    applyColorOverlays(target, clip, drawnRect);
+    applyColorOverlays(out, clip, drawnRect);
+  }
+
+  if (maskLayer) {
+    // Multiply the layer by the (feathered / inverted) mask coverage, then composite.
+    const m = mask!;
+    maskLayer.save();
+    maskLayer.globalCompositeOperation = "destination-in";
+    maskLayer.setTransform(1, 0, 0, 1, 0, 0);
+    const dpr = ctx.canvas.width / W;
+    maskLayer.scale(dpr, dpr);
+    // mask is defined relative to clip anchor; anim already applied via target transform,
+    // so express it in project space using the animated values.
+    drawMaskShape(maskLayer, m, W, H, { x: anim.x + (mods.dx ?? 0), y: anim.y + (mods.dy ?? 0), scale: sc, rotation: anim.rotation });
+    maskLayer.restore();
+    target.save();
+    target.setTransform(1, 0, 0, 1, 0, 0);
+    target.drawImage(maskLayer.canvas, 0, 0);
+    target.restore();
   }
   target.restore();
 

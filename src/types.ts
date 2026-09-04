@@ -4,7 +4,7 @@
 
 export type MediaType = "video" | "audio" | "image";
 export type TrackType = "video" | "audio";
-export type ClipKind = "media" | "text" | "solid";
+export type ClipKind = "media" | "text" | "solid" | "adjustment";
 
 export interface MediaAsset {
   id: string;
@@ -19,6 +19,8 @@ export interface MediaAsset {
   /** Evenly spaced filmstrip frames (data URLs) for timeline rendering. */
   filmstrip?: string[];
   waveform?: number[];
+  /** Cached beat analysis (source-relative seconds). */
+  beats?: { times: number[]; strengths: number[]; bpm: number };
   /** True when the underlying file could not be restored from storage. */
   missing?: boolean;
   size?: number;
@@ -141,6 +143,42 @@ export interface Keyframe {
 }
 
 export type KeyframeMap = Partial<Record<AnimProp, Keyframe[]>>;
+
+// ── Chroma key ──────────────────────────────────────────────────────────────
+
+export interface ChromaKey {
+  enabled: boolean;
+  color: string; // key colour (hex)
+  similarity: number; // 0..100 — how close a pixel must be to the key colour
+  smoothness: number; // 0..100 — width of the soft edge
+  spill: number; // 0..100 — spill suppression strength
+}
+
+export function defaultChromaKey(): ChromaKey {
+  return { enabled: false, color: "#00ff00", similarity: 32, smoothness: 12, spill: 50 };
+}
+
+// ── Masks ───────────────────────────────────────────────────────────────────
+
+export type MaskShape = "none" | "rectangle" | "ellipse";
+
+export interface ClipMask {
+  shape: MaskShape;
+  /** Centre offset from frame centre, in percent of frame size (-100..100). */
+  x: number;
+  y: number;
+  /** Size in percent of frame size. */
+  width: number;
+  height: number;
+  rotation: number; // deg
+  feather: number; // px (project space)
+  cornerRadius: number; // px (rectangle only)
+  invert: boolean;
+}
+
+export function defaultMask(): ClipMask {
+  return { shape: "none", x: 0, y: 0, width: 60, height: 60, rotation: 0, feather: 0, cornerRadius: 0, invert: false };
+}
 
 // ── Transitions ─────────────────────────────────────────────────────────────
 
@@ -312,6 +350,10 @@ export interface Clip {
   transitionIn?: Transition;
   text?: TextStyle;
   solid?: SolidStyle;
+  /** Pixel keying (media clips). */
+  chromaKey?: ChromaKey;
+  /** Shape mask applied in clip space (any video clip, including adjustment layers). */
+  mask?: ClipMask;
   linkGroup?: string;
 }
 
@@ -333,6 +375,8 @@ export interface Marker {
   time: number;
   label: string;
   color: string;
+  /** Optional grouping tag, e.g. "beats:<assetId>" for auto-generated markers. */
+  tag?: string;
 }
 
 export interface ProjectSettings {

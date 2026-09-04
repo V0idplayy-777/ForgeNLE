@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { useEditorStore } from "../store/useEditorStore";
-import { Undo2, Redo2, Type, FilePlus2, Download, Keyboard, Accessibility, Save, FolderOpen, ChevronDown, Check, Cloud, PanelLeft, PanelRight, Square, Bookmark } from "lucide-react";
+import { Undo2, Redo2, Type, FilePlus2, Download, Keyboard, Accessibility, Save, FolderOpen, ChevronDown, Check, Cloud, PanelLeft, PanelRight, Square, Bookmark, Layers } from "lucide-react";
 import { IconBtn, Kbd } from "./ui/controls";
 import { SHORTCUTS } from "../hooks/useKeyboardShortcuts";
 import { exportProjectFile, importProjectFile, resetEverything, saveNow } from "../lib/project";
@@ -24,6 +24,7 @@ export default function TopBar({ onExport, onAccessibility, shortcutsOpen, setSh
   const dirty = useEditorStore((s) => s.dirty);
   const addTextClip = useEditorStore((s) => s.addTextClip);
   const addSolidClip = useEditorStore((s) => s.addSolidClip);
+  const addAdjustmentLayer = useEditorStore((s) => s.addAdjustmentLayer);
   const addMarker = useEditorStore((s) => s.addMarker);
   const leftOpen = useEditorStore((s) => s.leftPanelOpen);
   const rightOpen = useEditorStore((s) => s.rightPanelOpen);
@@ -130,6 +131,9 @@ export default function TopBar({ onExport, onAccessibility, shortcutsOpen, setSh
       </button>
       <button className="toolbar-btn" onClick={() => addSolidClip({ color: "#000000" }, "Solid")} title="Add a solid color layer">
         <Square size={12} /> Solid
+      </button>
+      <button className="toolbar-btn" onClick={() => addAdjustmentLayer()} title="Add an adjustment layer — grades everything beneath it">
+        <Layers size={12} /> Adjust
       </button>
       <button className="toolbar-btn" onClick={() => addMarker()} title="Add marker (M)">
         <Bookmark size={12} /> Marker

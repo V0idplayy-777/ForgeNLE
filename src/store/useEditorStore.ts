@@ -26,6 +26,10 @@ import {
   defaultSolid,
   defaultTextStyle,
   defaultTransform,
+  ChromaKey,
+  ClipMask,
+  defaultChromaKey,
+  defaultMask,
 } from "../types";
 import { allClips, clamp, findClip, getProjectDuration, pickClipColor, uid } from "../lib/utils";
 import { baseValue, evaluateKeyframes, keyframeAt, removeKeyframeAt, scaleKeyframes, shiftKeyframes, upsertKeyframe } from "../lib/keyframes";
@@ -117,6 +121,8 @@ export interface EditorState {
   addMediaToTimeline: (assetId: string, opts?: { trackId?: string; start?: number; select?: boolean }) => void;
   addTextClip: (style?: Partial<TextStyle>, transform?: Partial<Transform>, duration?: number, name?: string) => void;
   addSolidClip: (solid: Partial<SolidStyle>, name?: string, extra?: Partial<Clip>) => void;
+  /** Adds an adjustment layer above everything at the playhead (grades all layers below it). */
+  addAdjustmentLayer: (duration?: number) => void;
 
   updateClip: (clipId: string, patch: Partial<Clip>, record?: boolean) => void;
   updateClips: (clipIds: string[], patch: Partial<Clip> | ((c: Clip) => Partial<Clip>), record?: boolean) => void;
@@ -126,6 +132,8 @@ export interface EditorState {
   updateClipAudio: (clipId: string, patch: Partial<ClipAudio>, record?: boolean) => void;
   updateClipText: (clipId: string, patch: Partial<TextStyle>, record?: boolean) => void;
   updateClipSolid: (clipId: string, patch: Partial<SolidStyle>, record?: boolean) => void;
+  updateClipChromaKey: (clipId: string, patch: Partial<ChromaKey>, record?: boolean) => void;
+  updateClipMask: (clipId: string, patch: Partial<ClipMask>, record?: boolean) => void;
   setClipTransition: (clipId: string, transition: Transition | undefined) => void;
   setClipBlendMode: (clipId: string, mode: BlendMode) => void;
   setClipSpeed: (clipId: string, speed: number) => void;
@@ -155,6 +163,11 @@ export interface EditorState {
 
   // markers / in-out
   addMarker: (time?: number, label?: string) => void;
+  /** Bulk marker insert (used by beat detection). Replaces markers with the same `tag`. */
+  addMarkers: (markers: { time: number; label: string; color?: string }[], tag?: string) => void;
+  removeMarkersByTag: (tag: string) => void;
+  /** Slice every clip on the given tracks at each time. */
+  splitAtTimes: (times: number[], trackIds?: string[]) => void;
   updateMarker: (id: string, patch: Partial<Marker>) => void;
   removeMarker: (id: string) => void;
   setInPoint: (t: number | null) => void;
@@ -601,6 +614,34 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set({ tracks: resolveOverlapsIn(tracks, [clip.id]), selectedClipIds: [clip.id], selectedClipId: clip.id, ...record(s) });
   },
 
+  addAdjustmentLayer: (duration) => {
+    const s = get();
+    let tracks = s.tracks;
+    const start = s.currentTime;
+    const total = getProjectDuration(tracks);
+    const dur = duration ?? Math.max(1, total - start || 5);
+    // Adjustment layers want to sit on top: use the top-most video track if it's free, otherwise add one.
+    const top = tracks.find((t) => t.type === "video");
+    let target = top && !top.locked && !top.clips.some((c) => start < c.start + c.duration && start + dur > c.start) ? top : undefined;
+    if (!target) {
+      const n = tracks.filter((t) => t.type === "video").length + 1;
+      target = makeTrack("video", trackLabel("video", n));
+      tracks = [target, ...tracks];
+    }
+    const clip = makeClip({
+      trackId: target.id,
+      kind: "adjustment",
+      name: "Adjustment",
+      start,
+      duration: dur,
+      color: "#a855f7",
+      mask: defaultMask(),
+    });
+    tracks = tracks.map((t) => (t.id === target!.id ? { ...t, clips: [...t.clips, clip] } : t));
+    set({ tracks: resolveOverlapsIn(tracks, [clip.id]), selectedClipIds: [clip.id], selectedClipId: clip.id, rightTab: "color", ...record(s) });
+    get().notify("Adjustment layer added — everything below it is graded by its Color tab", "info");
+  },
+
   // ── clip updates ──
   updateClip: (clipId, patch, rec = true) =>
     set((s) => ({
@@ -628,6 +669,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   updateClipSolid: (clipId, patch, rec = false) =>
     set((s) => ({
       tracks: mapClips(s.tracks, [clipId], (c) => ({ ...c, solid: { ...(c.solid ?? defaultSolid()), ...patch } })),
+      ...(rec ? record(s) : live(s)),
+    })),
+  updateClipChromaKey: (clipId, patch, rec = false) =>
+    set((s) => ({
+      tracks: mapClips(s.tracks, [clipId], (c) => ({ ...c, chromaKey: { ...(c.chromaKey ?? defaultChromaKey()), ...patch } })),
+      ...(rec ? record(s) : live(s)),
+    })),
+  updateClipMask: (clipId, patch, rec = false) =>
+    set((s) => ({
+      tracks: mapClips(s.tracks, [clipId], (c) => ({ ...c, mask: { ...(c.mask ?? defaultMask()), ...patch } })),
       ...(rec ? record(s) : live(s)),
     })),
   setClipTransition: (clipId, transition) =>
@@ -933,6 +984,42 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const colors = ["#22d3ee", "#a78bfa", "#f472b6", "#fbbf24", "#34d399"];
       const marker: Marker = { id: uid("mk"), time: t, label: label ?? `Marker ${s.markers.length + 1}`, color: colors[s.markers.length % colors.length] };
       return { markers: [...s.markers, marker].sort((a, b) => a.time - b.time), ...record(s) };
+    }),
+  addMarkers: (list, tag) =>
+    set((s) => {
+      const kept = tag ? s.markers.filter((m) => m.tag !== tag) : s.markers;
+      const fresh: Marker[] = list
+        .filter((m) => !kept.some((k) => Math.abs(k.time - m.time) < 0.02))
+        .map((m) => ({ id: uid("mk"), time: m.time, label: m.label, color: m.color ?? "#f472b6", tag }));
+      return { markers: [...kept, ...fresh].sort((a, b) => a.time - b.time), ...record(s) };
+    }),
+  removeMarkersByTag: (tag) => set((s) => ({ markers: s.markers.filter((m) => m.tag !== tag), ...record(s) })),
+  splitAtTimes: (times, trackIds) =>
+    set((s) => {
+      let tracks = s.tracks;
+      let changed = false;
+      const sorted = [...times].sort((a, b) => a - b);
+      for (const time of sorted) {
+        tracks = tracks.map((t) => {
+          if (t.locked || (trackIds && !trackIds.includes(t.id))) return t;
+          let touched = false;
+          const clips: Clip[] = [];
+          for (const c of t.clips) {
+            const parts = splitClip(c, time);
+            if (!parts) {
+              clips.push(c);
+              continue;
+            }
+            touched = true;
+            clips.push(parts[0], parts[1]);
+          }
+          if (!touched) return t;
+          changed = true;
+          return { ...t, clips };
+        });
+      }
+      if (!changed) return {};
+      return { tracks, ...record(s) };
     }),
   updateMarker: (id, patch) => set((s) => ({ markers: s.markers.map((m) => (m.id === id ? { ...m, ...patch } : m)).sort((a, b) => a.time - b.time), dirty: true })),
   removeMarker: (id) => set((s) => ({ markers: s.markers.filter((m) => m.id !== id), ...record(s) })),

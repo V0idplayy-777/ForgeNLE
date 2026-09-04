@@ -317,7 +317,7 @@ function hitTest(e: React.PointerEvent, stage: HTMLDivElement, frameScale: numbe
   for (const track of s.tracks) {
     if (track.type !== "video" || track.hidden || track.locked) continue;
     for (const clip of [...track.clips].reverse()) {
-      if (!isClipActive(clip, s.currentTime)) continue;
+      if (!isClipActive(clip, s.currentTime) || clip.kind === "adjustment") continue;
       const b = getClipBounds(clip, s.currentTime, s.settings, clip.kind === "media" ? engine.getSource(clip, s.mediaAssets) : null);
       if (!b) continue;
       // inverse transform point
@@ -373,7 +373,7 @@ function TransformGizmo({ clipId, frameScale, stageRef }: { clipId: string; fram
     const id = setInterval(() => force((n) => n + 1), 500);
     return () => clearInterval(id);
   }, []);
-  if (!found || found.track.type !== "video" || found.track.locked || !isClipActive(found.clip, currentTime)) return null;
+  if (!found || found.track.type !== "video" || found.track.locked || found.clip.kind === "adjustment" || !isClipActive(found.clip, currentTime)) return null;
   const clip = found.clip;
   const engine = getPreviewEngine();
   const b = getClipBounds(clip, currentTime, settings, clip.kind === "media" ? engine.getSource(clip, useEditorStore.getState().mediaAssets) : null);

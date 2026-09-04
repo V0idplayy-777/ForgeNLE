@@ -1,13 +1,15 @@
 import { useEditorStore, RightTab, useSelectedClip } from "../../store/useEditorStore";
-import { AnimProp, BLEND_MODES, Clip, Track, TextAnim, defaultCrop, defaultEffects, defaultTextStyle, defaultTransform } from "../../types";
+import { AnimProp, BLEND_MODES, Clip, Track, TextAnim, defaultChromaKey, defaultCrop, defaultEffects, defaultMask, defaultTextStyle, defaultTransform } from "../../types";
 import { Section, Row, SliderRow, NumberField, Select, Toggle, Segmented, ColorField, Btn, Empty } from "../ui/controls";
 import { FONTS, LOOKS, TRANSITIONS, WEIGHT_LABELS, applyLook, fontWeightsFor, transitionName } from "../../lib/presets";
 import { evaluateClip, hasKeyframes, keyframeAt } from "../../lib/keyframes";
 import { formatTimecode, clamp } from "../../lib/utils";
-import { SlidersHorizontal, Palette, Volume2, Diamond, PanelRightClose, AlignLeft, AlignCenter, AlignRight, Italic, CaseUpper, Link2, Trash2, MousePointerClick, Info, Music4, Scissors, Copy } from "lucide-react";
+import { SlidersHorizontal, Palette, Volume2, Diamond, PanelRightClose, AlignLeft, AlignCenter, AlignRight, Italic, CaseUpper, Link2, Trash2, MousePointerClick, Info, Music4, Scissors, Copy, Pipette, Layers, Activity } from "lucide-react";
 import { cn } from "../../utils/cn";
 import ProjectSettingsPanel from "./ProjectSettingsPanel";
 import KeyframeEditor from "./KeyframeEditor";
+import { useState } from "react";
+import { analyseBeats, decodeForAnalysis, thinBeats, BeatAnalysis } from "../../lib/beats";
 
 const TABS: { id: RightTab; label: string; icon: React.ReactNode }[] = [
   { id: "inspector", label: "Inspector", icon: <SlidersHorizontal size={14} /> },
@@ -100,6 +102,12 @@ function ClipHeader({ clip, track }: { clip: Clip; track: Track }) {
         <div className="mt-1.5 flex items-center gap-1 truncate text-[10px] text-neutral-500">
           <Info size={10} /> {asset.name}
           {asset.width ? ` · ${asset.width}×${asset.height}` : ""} · {track.name}
+        </div>
+      )}
+      {clip.kind === "adjustment" && (
+        <div className="mt-1.5 flex items-start gap-1.5 rounded bg-purple-500/10 px-2 py-1.5 text-[10px] text-purple-200">
+          <Layers size={11} className="mt-px shrink-0" />
+          <span>Adjustment layer — its Color grade, mask and opacity apply to every layer beneath it on the timeline.</span>
         </div>
       )}
       {multi > 1 && <div className="mt-1.5 rounded bg-indigo-500/10 px-2 py-1 text-[10px] text-indigo-300">{multi} clips selected — edits apply to the primary clip.</div>}
@@ -214,6 +222,9 @@ function ClipInspector({ clip, track }: { clip: Clip; track: Track }) {
           <SliderRow label="Bottom" value={clip.crop.bottom} min={0} max={95} step={0.5} unit="%" defaultValue={0} onChange={(v) => updateClipCrop(clip.id, { bottom: Math.min(v, 99 - clip.crop.top) })} onCommit={commitHistory} />
         </Section>
       )}
+
+      {isVideoTrack && isMedia && <ChromaKeySection clip={clip} />}
+      {isVideoTrack && <MaskSection clip={clip} />}
 
       <Section title="Timing">
         {canSpeed && (
@@ -427,6 +438,119 @@ function SolidSection({ clip }: { clip: Clip }) {
   );
 }
 
+// ── Chroma key ──────────────────────────────────────────────────────────────
+
+function ChromaKeySection({ clip }: { clip: Clip }) {
+  const updateClipChromaKey = useEditorStore((s) => s.updateClipChromaKey);
+  const commitHistory = useEditorStore((s) => s.commitHistory);
+  const notify = useEditorStore((s) => s.notify);
+  const key = clip.chromaKey ?? defaultChromaKey();
+  const set = (p: Partial<typeof key>) => updateClipChromaKey(clip.id, p);
+
+  /** Samples the key colour from the centre of the preview canvas (or wherever the user last clicked). */
+  function pickFromPreview() {
+    const canvas = document.querySelector<HTMLCanvasElement>("[data-preview-stage] canvas");
+    if (!canvas) return;
+    notify("Click a point on the preview to sample the key colour", "info");
+    const onClick = (e: MouseEvent) => {
+      const r = canvas.getBoundingClientRect();
+      const x = Math.floor(((e.clientX - r.left) / r.width) * canvas.width);
+      const y = Math.floor(((e.clientY - r.top) / r.height) * canvas.height);
+      try {
+        const d = canvas.getContext("2d")!.getImageData(x, y, 1, 1).data;
+        const hex = "#" + [d[0], d[1], d[2]].map((n) => n.toString(16).padStart(2, "0")).join("");
+        updateClipChromaKey(clip.id, { color: hex, enabled: true }, true);
+        notify(`Key colour set to ${hex}`, "success");
+      } catch {
+        notify("Couldn't read the preview pixel", "error");
+      }
+      e.stopPropagation();
+      e.preventDefault();
+      canvas.removeEventListener("click", onClick, true);
+    };
+    canvas.addEventListener("click", onClick, true);
+  }
+
+  return (
+    <Section
+      title="Chroma key"
+      defaultOpen={key.enabled}
+      right={<Toggle checked={key.enabled} onChange={(v) => updateClipChromaKey(clip.id, { enabled: v }, true)} />}
+      onReset={() => updateClipChromaKey(clip.id, { ...defaultChromaKey(), enabled: key.enabled }, true)}
+    >
+      <Row label="Key colour">
+        <ColorField value={key.color} onChange={(v) => set({ color: v })} onCommit={commitHistory} />
+        <Btn variant="ghost" onClick={pickFromPreview} title="Sample from preview">
+          <Pipette size={12} />
+        </Btn>
+      </Row>
+      <div className="mb-2 grid grid-cols-3 gap-1">
+        {[
+          ["Green", "#00ff00"],
+          ["Blue", "#0000ff"],
+          ["White", "#ffffff"],
+        ].map(([label, hex]) => (
+          <Btn key={hex} variant="ghost" onClick={() => updateClipChromaKey(clip.id, { color: hex, enabled: true }, true)}>
+            <span className="mr-1 inline-block h-2.5 w-2.5 rounded-sm border border-white/20" style={{ background: hex }} /> {label}
+          </Btn>
+        ))}
+      </div>
+      <SliderRow label="Similarity" value={key.similarity} min={0} max={100} step={1} unit="%" defaultValue={32} onChange={(v) => set({ similarity: v })} onCommit={commitHistory} />
+      <SliderRow label="Smoothness" value={key.smoothness} min={0} max={100} step={1} unit="%" defaultValue={12} onChange={(v) => set({ smoothness: v })} onCommit={commitHistory} />
+      <SliderRow label="Spill" value={key.spill} min={0} max={100} step={1} unit="%" defaultValue={50} onChange={(v) => set({ spill: v })} onCommit={commitHistory} />
+      {!key.enabled && <p className="text-[10px] text-neutral-500">Removes a green/blue screen so layers beneath show through. Enable, then tune Similarity until the backdrop disappears.</p>}
+    </Section>
+  );
+}
+
+// ── Mask ────────────────────────────────────────────────────────────────────
+
+function MaskSection({ clip }: { clip: Clip }) {
+  const updateClipMask = useEditorStore((s) => s.updateClipMask);
+  const commitHistory = useEditorStore((s) => s.commitHistory);
+  const settings = useEditorStore((s) => s.settings);
+  const mask = clip.mask ?? defaultMask();
+  const set = (p: Partial<typeof mask>) => updateClipMask(clip.id, p);
+  const active = mask.shape !== "none";
+  return (
+    <Section title="Mask" defaultOpen={active || clip.kind === "adjustment"} onReset={() => updateClipMask(clip.id, defaultMask(), true)}>
+      <Row label="Shape">
+        <Segmented
+          value={mask.shape}
+          onChange={(v) => updateClipMask(clip.id, { shape: v }, true)}
+          options={[
+            { value: "none", label: "Off" },
+            { value: "rectangle", label: "Rectangle" },
+            { value: "ellipse", label: "Ellipse" },
+          ]}
+          size="xs"
+          className="w-full"
+        />
+      </Row>
+      {active && (
+        <>
+          <SliderRow label="Center X" value={mask.x} min={-100} max={100} step={0.5} unit="%" defaultValue={0} onChange={(v) => set({ x: v })} onCommit={commitHistory} />
+          <SliderRow label="Center Y" value={mask.y} min={-100} max={100} step={0.5} unit="%" defaultValue={0} onChange={(v) => set({ y: v })} onCommit={commitHistory} />
+          <SliderRow label="Width" value={mask.width} min={1} max={200} step={0.5} unit="%" defaultValue={60} onChange={(v) => set({ width: v })} onCommit={commitHistory} />
+          <SliderRow label="Height" value={mask.height} min={1} max={200} step={0.5} unit="%" defaultValue={60} onChange={(v) => set({ height: v })} onCommit={commitHistory} />
+          <SliderRow label="Rotation" value={mask.rotation} min={-180} max={180} step={0.5} unit="°" defaultValue={0} onChange={(v) => set({ rotation: v })} onCommit={commitHistory} />
+          <SliderRow label="Feather" value={mask.feather} min={0} max={Math.round(Math.min(settings.width, settings.height) / 4)} step={1} unit="px" defaultValue={0} onChange={(v) => set({ feather: v })} onCommit={commitHistory} />
+          {mask.shape === "rectangle" && <SliderRow label="Corners" value={mask.cornerRadius} min={0} max={Math.round(Math.min(settings.width, settings.height) / 2)} step={1} unit="px" defaultValue={0} onChange={(v) => set({ cornerRadius: v })} onCommit={commitHistory} />}
+          <Row label="Invert">
+            <Toggle checked={mask.invert} onChange={(v) => updateClipMask(clip.id, { invert: v }, true)} label="Show outside the shape instead" />
+          </Row>
+          <div className="mt-1 grid grid-cols-3 gap-1">
+            <Btn variant="ghost" onClick={() => updateClipMask(clip.id, { shape: "ellipse", x: 0, y: 0, width: 40, height: 70, feather: 120 }, true)}>Spotlight</Btn>
+            <Btn variant="ghost" onClick={() => updateClipMask(clip.id, { shape: "rectangle", x: 0, y: 0, width: 100, height: 75, feather: 0, cornerRadius: 0 }, true)}>Letterbox</Btn>
+            <Btn variant="ghost" onClick={() => updateClipMask(clip.id, { shape: "rectangle", x: 0, y: 0, width: 50, height: 100, feather: 0 }, true)}>Split</Btn>
+          </div>
+        </>
+      )}
+      {!active && <p className="text-[10px] text-neutral-500">Reveal only part of this layer — vignettes, split screens, spotlight grades. The mask follows the clip's transform and keyframes.</p>}
+    </Section>
+  );
+}
+
 // ── Color tab ───────────────────────────────────────────────────────────────
 
 function ColorPanel({ clip, track }: { clip: Clip; track: Track }) {
@@ -439,6 +563,7 @@ function ColorPanel({ clip, track }: { clip: Clip; track: Track }) {
   return (
     <div className="text-xs">
       <ClipHeader clip={clip} track={track} />
+      {clip.kind === "adjustment" && <MaskSection clip={clip} />}
       <Section title="Look">
         <div className="grid grid-cols-4 gap-1.5">
           {LOOKS.map((l) => (
@@ -511,10 +636,110 @@ function AudioPanel({ clip, track }: { clip: Clip; track: Track }) {
         <SliderRow label="Fade in" value={a.fadeIn} min={0} max={Math.min(10, clip.duration)} step={0.05} unit="s" defaultValue={0} onChange={(v) => set({ fadeIn: v })} onCommit={commitHistory} />
         <SliderRow label="Fade out" value={a.fadeOut} min={0} max={Math.min(10, clip.duration)} step={0.05} unit="s" defaultValue={0} onChange={(v) => set({ fadeOut: v })} onCommit={commitHistory} />
       </Section>
+      <BeatSyncSection clip={clip} assetId={asset.id} assetUrl={asset.url} cached={asset.beats} />
       <Section title={`Track · ${track.name}`}>
         <SliderRow label="Track vol" value={track.volume} min={0} max={200} step={1} unit="%" defaultValue={100} onChange={(v) => setTrackVolume(track.id, v)} />
       </Section>
     </div>
+  );
+}
+
+// ── Beat sync ───────────────────────────────────────────────────────────────
+
+function BeatSyncSection({ clip, assetId, assetUrl, cached }: { clip: Clip; assetId: string; assetUrl: string; cached?: { times: number[]; strengths: number[]; bpm: number } }) {
+  const patchMedia = useEditorStore((s) => s.patchMedia);
+  const addMarkers = useEditorStore((s) => s.addMarkers);
+  const removeMarkersByTag = useEditorStore((s) => s.removeMarkersByTag);
+  const splitAtTimes = useEditorStore((s) => s.splitAtTimes);
+  const notify = useEditorStore((s) => s.notify);
+  const tracks = useEditorStore((s) => s.tracks);
+  const markerCount = useEditorStore((s) => s.markers.filter((m) => m.tag === `beats:${clip.id}`).length);
+  const [busy, setBusy] = useState<number | null>(null);
+  const [sensitivity, setSensitivity] = useState(50);
+  const [every, setEvery] = useState<"1" | "2" | "4" | "8">("1");
+  const analysis: BeatAnalysis | null = cached ? { beats: cached.times, strengths: cached.strengths, bpm: cached.bpm, duration: 0 } : null;
+
+  async function analyse() {
+    setBusy(0);
+    try {
+      const buf = await decodeForAnalysis(assetUrl);
+      // Yield so the progress UI paints before the heavy loop.
+      await new Promise((r) => setTimeout(r, 20));
+      const res = analyseBeats(buf, { sensitivity: sensitivity / 100, onProgress: (r) => setBusy(r) });
+      patchMedia(assetId, { beats: { times: res.beats, strengths: res.strengths, bpm: res.bpm } });
+      notify(`Found ${res.beats.length} beats${res.bpm ? ` · ~${res.bpm} BPM` : ""}`, "success");
+    } catch (e) {
+      notify(`Beat analysis failed: ${(e as Error).message}`, "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /** Beat times (source seconds) → timeline seconds through this clip's trim & speed, clipped to the clip. */
+  function timelineBeats(): number[] {
+    if (!analysis) return [];
+    const list = thinBeats(analysis, Number(every));
+    const out: number[] = [];
+    for (const b of list) {
+      const t = clip.start + (b - clip.trimIn) / clip.speed;
+      if (t > clip.start + 0.02 && t < clip.start + clip.duration - 0.02) out.push(t);
+    }
+    return out;
+  }
+
+  function placeMarkers() {
+    const times = timelineBeats();
+    if (!times.length) return notify("No beats inside this clip's range", "error");
+    addMarkers(times.map((t, i) => ({ time: t, label: `Beat ${i + 1}`, color: "#f472b6" })), `beats:${clip.id}`);
+    notify(`${times.length} beat markers added`, "success");
+  }
+
+  function cutVideoToBeats() {
+    const times = timelineBeats();
+    if (!times.length) return notify("No beats inside this clip's range", "error");
+    const videoTrackIds = tracks.filter((t) => t.type === "video" && !t.locked).map((t) => t.id);
+    if (!videoTrackIds.length) return notify("No unlocked video tracks", "error");
+    splitAtTimes(times, videoTrackIds);
+    notify(`Video cut at ${times.length} beats — swap or delete segments to build the montage`, "success");
+  }
+
+  return (
+    <Section title="Beat sync">
+      {!analysis ? (
+        <>
+          <SliderRow label="Sensitivity" value={sensitivity} min={0} max={100} step={1} unit="%" defaultValue={50} onChange={setSensitivity} />
+          <Btn onClick={analyse} disabled={busy !== null} className="w-full">
+            <Activity size={12} /> {busy === null ? "Detect beats" : `Analysing… ${Math.round((busy ?? 0) * 100)}%`}
+          </Btn>
+          <p className="mt-1.5 text-[10px] text-neutral-500">Finds kicks, snares and transients in this clip so you can drop markers and cut picture to the music.</p>
+        </>
+      ) : (
+        <>
+          <div className="mb-2 flex items-center justify-between rounded bg-white/[0.04] px-2 py-1.5">
+            <span className="text-[11px] text-neutral-300">
+              <span className="font-semibold text-white">{analysis.beats.length}</span> beats
+              {analysis.bpm ? <span className="text-neutral-500"> · ~{analysis.bpm} BPM</span> : null}
+            </span>
+            <button className="text-[10px] text-neutral-500 hover:text-white" onClick={() => patchMedia(assetId, { beats: undefined })}>
+              Re-analyse
+            </button>
+          </div>
+          <Row label="Every">
+            <Segmented value={every} onChange={setEvery} options={[{ value: "1", label: "beat" }, { value: "2", label: "2" }, { value: "4", label: "4" }, { value: "8", label: "8" }]} size="xs" className="w-full" />
+          </Row>
+          <div className="grid grid-cols-2 gap-1">
+            <Btn variant="ghost" onClick={placeMarkers}>Add markers</Btn>
+            <Btn variant="ghost" onClick={cutVideoToBeats}>Cut video to beats</Btn>
+          </div>
+          {markerCount > 0 && (
+            <button className="mt-1.5 text-[10px] text-neutral-500 hover:text-red-300" onClick={() => removeMarkersByTag(`beats:${clip.id}`)}>
+              Remove {markerCount} beat markers
+            </button>
+          )}
+          <p className="mt-1.5 text-[10px] text-neutral-500">Markers snap while dragging, so clips land exactly on the beat. "Cut video" slices every unlocked video track at each beat.</p>
+        </>
+      )}
+    </Section>
   );
 }
 
