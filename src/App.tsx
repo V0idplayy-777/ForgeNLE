@@ -12,7 +12,6 @@ import { restoreLastProject, saveNow, startAutosave } from "./lib/project";
 import { ingestFiles } from "./components/panels/MediaBin";
 import { cn } from "./utils/cn";
 import { CheckCircle2, AlertCircle, Info, UploadCloud } from "lucide-react";
-import { ErrorBoundary } from "./components/ui/ErrorBoundary";
 
 const LEFT_MIN = 260;
 const LEFT_MAX = 560;
