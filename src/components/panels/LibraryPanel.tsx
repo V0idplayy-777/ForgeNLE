@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useEditorStore, LeftTab, useSelectedClip } from "../../store/useEditorStore";
 import MediaBin from "./MediaBin";
 import MotionLibrary from "./MotionLibrary";
 import GamingPanel from "./GamingPanel";
 import { ELEMENTS, LOOKS, TEXT_PRESETS, TRANSITIONS, applyLook, buildTextStyle, buildTextTransform, TextPreset } from "../../lib/presets";
-import { FolderOpen, Type, Shapes, ArrowLeftRight, Palette, PanelLeftClose, Sparkles, Move3d, Gamepad2 } from "lucide-react";
+import { parseSubtitles } from "../../lib/captions";
+import { FolderOpen, Type, Shapes, ArrowLeftRight, Palette, PanelLeftClose, Sparkles, Move3d, Gamepad2, Captions } from "lucide-react";
 import { cn } from "../../utils/cn";
 import { TransitionType, defaultEffects } from "../../types";
 
@@ -63,9 +64,28 @@ export default function LibraryPanel() {
 
 function TextLibrary() {
   const addTextClip = useEditorStore((s) => s.addTextClip);
+  const importCaptions = useEditorStore((s) => s.importCaptions);
+  const notify = useEditorStore((s) => s.notify);
   const [cat, setCat] = useState<"All" | TextPreset["category"]>("All");
+  const [capPreset, setCapPreset] = useState("cap-subtitle");
+  const captionsInput = useRef<HTMLInputElement>(null);
   const cats: ("All" | TextPreset["category"])[] = ["All", "Titles", "Lower Thirds", "Captions", "Social", "Emphasis"];
   const list = TEXT_PRESETS.filter((p) => cat === "All" || p.category === cat);
+
+  async function ingestCaptions(file: File) {
+    try {
+      const text = await file.text();
+      const cues = parseSubtitles(text);
+      if (!cues.length) {
+        notify("No subtitle cues found in that file", "error");
+        return;
+      }
+      importCaptions(cues, { presetId: capPreset });
+    } catch {
+      notify("Could not read that subtitle file", "error");
+    }
+  }
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex flex-wrap gap-1 border-b border-white/5 px-2 py-1.5">
@@ -76,6 +96,38 @@ function TextLibrary() {
         ))}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        <div className="mb-2 flex items-center gap-1.5">
+          <button
+            onClick={() => captionsInput.current?.click()}
+            className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-dashed border-white/15 py-2.5 text-[11px] text-neutral-300 hover:border-indigo-400 hover:text-white"
+            title="Turn an .srt/.vtt subtitle file into synced caption clips"
+          >
+            <Captions size={13} /> Import captions (.srt / .vtt)
+          </button>
+          <select
+            value={capPreset}
+            onChange={(e) => setCapPreset(e.target.value)}
+            className="h-9 rounded-lg border border-white/10 bg-[#1c1c20] px-1 text-[10px] text-neutral-300 outline-none"
+            title="Caption style"
+          >
+            {TEXT_PRESETS.filter((p) => p.category === "Captions" || p.category === "Emphasis").map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <input
+            ref={captionsInput}
+            type="file"
+            accept=".srt,.vtt,text/plain"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = "";
+              if (f) void ingestCaptions(f);
+            }}
+          />
+        </div>
         <button
           onClick={() => addTextClip()}
           className="mb-2 flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-white/15 py-2.5 text-[11px] text-neutral-300 hover:border-indigo-400 hover:text-white"
@@ -188,6 +240,15 @@ function ElementsLibrary() {
                       <div className="absolute inset-x-0 top-0 h-[12%] bg-red-500" />
                       <div className="absolute inset-x-0 bottom-0 h-[12%] bg-red-500" />
                     </div>
+                  ) : el.shape === "arrow" ? (
+                    <div
+                      style={{
+                        width: "62%",
+                        height: "40%",
+                        background: el.color,
+                        clipPath: "polygon(0 32%, 52% 32%, 52% 0, 100% 50%, 52% 100%, 52% 68%, 0 68%)",
+                      }}
+                    />
                   ) : el.strokeWidth ? (
                     <div
                       style={{

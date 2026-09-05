@@ -34,8 +34,11 @@ import {
   KeyframeMap,
 } from "../types";
 import { allClips, clamp, findClip, getProjectDuration, pickClipColor, uid } from "../lib/utils";
-import { baseValue, durationForSource, evaluateKeyframes, keyframeAt, removeKeyframeAt, scaleKeyframes, shiftKeyframes, sourceOffsetAt, sourceSpan, upsertKeyframe } from "../lib/keyframes";
-import { sourceTime } from "../lib/renderer";
+import { baseValue, durationForSource, evaluateClip, evaluateKeyframes, keyframeAt, removeKeyframeAt, scaleKeyframes, shiftKeyframes, sourceOffsetAt, sourceSpan, upsertKeyframe } from "../lib/keyframes";
+import { getClipBounds, sourceTime } from "../lib/renderer";
+import { getPreviewEngine } from "../lib/playbackEngine";
+import { ensureSfxAsset } from "../lib/sfx";
+import { CaptionCue } from "../lib/captions";
 import { ComposeLayoutId, MotionPresetId, composeCell, composeLayoutById, layoutCells, motionPresetById } from "../lib/motion";
 import { BURST_STYLES, FacecamPresetId, ZoomCutMode, facecamPatch, montageRanges, popTrackAtTimes, zoomCutScaleTrack } from "../lib/gaming";
 import { TEXT_PRESETS, buildTextStyle, buildTextTransform } from "../lib/presets";
@@ -85,6 +88,19 @@ export interface EditorState {
   scope: ScopeKind | null;
   setScope: (k: ScopeKind | null) => void;
   previewQuality: "full" | "half" | "quarter";
+
+  // punch-to-point picking (Gaming tab → Punch focus)
+  focusPickArmed: boolean;
+  focusPickZoom: number; // extra zoom % at the target
+  focusPickRamp: number; // seconds to reach the target
+  armFocusPick: (armed: boolean, opts?: { zoom?: number; ramp?: number }) => void;
+  punchToFocusPoint: (px: number, py: number) => void;
+
+  // beat grid overlay (timeline)
+  beatGridOn: boolean;
+  beatGridAssetId: string | null;
+  toggleBeatGrid: () => void;
+  setBeatGridAsset: (id: string | null) => void;
 
   // panels
   leftTab: LeftTab;
@@ -194,6 +210,14 @@ export interface EditorState {
   applyFacecam: (clipIds: string[], preset: FacecamPresetId, opts?: { size?: number; border?: number; borderColor?: string }) => void;
   /** Sequential meme pop-captions starting at the playhead. */
   captionBurst: (lines: string[], opts?: { duration?: number; gap?: number }) => void;
+  /** Staggered emoji pop-ins from the playhead (reaction spam). */
+  emojiBlitz: (emojis?: string[], opts?: { count?: number; size?: number; duration?: number; gap?: number; sfxAssetId?: string }) => void;
+  /** Impact hit + vine boom + emoji storm in one click. */
+  maxChaos: () => Promise<void>;
+  /** Converts parsed SRT/VTT cues into styled caption clips on a Captions track. */
+  importCaptions: (cues: CaptionCue[], opts?: { presetId?: string }) => void;
+  /** Forward + reversed loop of the seconds before the playhead (boomerang meme). */
+  boomerang: (opts?: { clipId?: string; seconds?: number }) => void;
   /** Places an SFX asset at the playhead on a free audio track (layers, never overwrites). */
   addSfxClip: (assetId: string) => void;
   /** Censor box at the playhead: bleep tone + blurred adjustment-box. */
@@ -399,7 +423,26 @@ function resolveOverlapsIn(tracks: Track[], ids: string[]): Track[] {
   });
 }
 
-/** Shift a speed-ramp curve into a sliced piece's local time base. */
+/** First unlocked track of `type` with room for [start, start+dur); appends a new one when full. */
+function withFreeTrack(tracks: Track[], type: TrackType, start: number, dur: number): { tracks: Track[]; track: Track } {
+  const hit = tracks
+    .filter((x) => x.type === type && !x.locked)
+    .find((x) => !x.clips.some((c) => start < c.start + c.duration && start + dur > c.start));
+  if (hit) return { tracks, track: hit };
+  const n = tracks.filter((x) => x.type === type).length + 1;
+  const made = makeTrack(type, trackLabel(type, n));
+  return { tracks: type === "video" ? [made, ...tracks] : [...tracks, made], track: made };
+}
+
+/** Deterministic scatter ring for emoji blitz placement. */
+function emojiScatter(i: number, W: number, H: number): { x: number; y: number; rot: number } {
+  const r1 = Math.abs(Math.sin(i * 12.9898 + 1.2) * 43758.5453) % 1;
+  const r2 = Math.abs(Math.sin(i * 78.233 + 4.7) * 12543.123) % 1;
+  const ang = i * 2.39996 + r1 * 0.9;
+  const rad = (0.16 + 0.3 * r2) * Math.min(W, H);
+  return { x: Math.round(Math.cos(ang) * rad), y: Math.round(Math.sin(ang) * rad * 0.78), rot: Math.round((r1 - 0.5) * 26) };
+}
+
 function shiftRamp(ramp: Keyframe[] | undefined, delta: number, duration: number): Keyframe[] | undefined {
   if (!ramp || !ramp.length) return ramp;
   const moved = ramp.map((k) => ({ ...k, time: k.time + delta })).filter((k) => k.time >= -0.001 && k.time <= duration + 0.001);
@@ -482,6 +525,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   showGrid: false,
   scope: null,
   previewQuality: "half",
+
+  focusPickArmed: false,
+  focusPickZoom: 70,
+  focusPickRamp: 0.35,
+  beatGridOn: false,
+  beatGridAssetId: null,
 
   leftTab: "media",
   rightTab: "inspector",
@@ -1452,6 +1501,302 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     });
     get().notify(`💬 Caption burst: ${clean.length} captions placed`, "success");
   },
+
+  emojiBlitz: (emojis, opts = {}) => {
+    const s = get();
+    const list = (emojis && emojis.length ? emojis : ["😱", "🔥", "💀", "😂", "👀", "🤯"]).map((e) => e.trim()).filter(Boolean);
+    if (!list.length) {
+      s.notify("Type at least one emoji first", "error");
+      return;
+    }
+    const count = clamp(opts.count ?? list.length, 1, 14);
+    const size = clamp(opts.size ?? 150, 48, 340);
+    const dur = clamp(opts.duration ?? 0.6, 0.15, 3);
+    const gap = clamp(opts.gap ?? 0.12, 0, 2);
+    const t = s.currentTime;
+    set((st) => {
+      let tracks = st.tracks;
+      const total = count * dur + (count - 1) * gap;
+      const free = withFreeTrack(tracks, "video", t, total);
+      tracks = free.tracks;
+      const target = free.track;
+      const clips: Clip[] = [];
+      for (let i = 0; i < count; i++) {
+        const sc = emojiScatter(i, st.settings.width, st.settings.height);
+        clips.push(
+          makeClip({
+            trackId: target.id,
+            kind: "text",
+            name: `Emoji ${list[i % list.length]}`,
+            start: t + i * (dur + gap),
+            duration: dur,
+            color: "#f472b6",
+            text: {
+              ...defaultTextStyle(),
+              content: list[i % list.length],
+              fontSize: size,
+              strokeWidth: 0,
+              animIn: "pop",
+              animInDuration: 0.16,
+              animOut: "fade",
+              animOutDuration: Math.min(0.15, dur / 3),
+            },
+            transform: { x: sc.x, y: sc.y, scale: 1, rotation: sc.rot },
+          })
+        );
+      }
+      tracks = tracks.map((tr) => (tr.id === target.id ? { ...tr, clips: [...tr.clips, ...clips].sort((a, b) => a.start - b.start) } : tr));
+      // Optional machine-gun pops under the emojis.
+      if (opts.sfxAssetId) {
+        const asset = st.mediaAssets.find((m) => m.id === opts.sfxAssetId);
+        if (asset) {
+          for (let i = 0; i < count; i += 2) {
+            const start = t + i * (dur + gap);
+            const freeA = withFreeTrack(tracks, "audio", start, asset.duration);
+            tracks = freeA.tracks;
+            const pop = makeClip({ trackId: freeA.track.id, kind: "media", mediaId: asset.id, name: "Pop", start, duration: asset.duration, color: "#10b981" });
+            tracks = tracks.map((tr) => (tr.id === freeA.track.id ? { ...tr, clips: [...tr.clips, pop].sort((a, b) => a.start - b.start) } : tr));
+          }
+        }
+      }
+      const ids = clips.map((c) => c.id);
+      return { tracks, selectedClipIds: ids, selectedClipId: ids[0], ...record(st) };
+    });
+    get().notify(`⚡ Emoji blitz: ${count} emojis fired`, "success");
+  },
+
+  maxChaos: async () => {
+    const g = get();
+    try {
+      const [boom, impact] = await Promise.all([ensureSfxAsset("vine-boom"), ensureSfxAsset("impact")]);
+      g.addMedia([boom, impact]);
+      const s = get();
+      const t = s.currentTime;
+      // Layer the vine boom first so the impact SFX lands on the next free track.
+      set((st) => {
+        let tracks = st.tracks;
+        const freeA = withFreeTrack(tracks, "audio", t, boom.duration);
+        tracks = freeA.tracks;
+        const clip = makeClip({ trackId: freeA.track.id, kind: "media", mediaId: boom.id, name: "Vine Boom", start: t, duration: boom.duration, color: "#10b981" });
+        tracks = tracks.map((tr) => (tr.id === freeA.track.id ? { ...tr, clips: [...tr.clips, clip].sort((a, b) => a.start - b.start) } : tr));
+        return { tracks, ...record(st) };
+      });
+      get().impactAtPlayhead({ freeze: 0.12, shake: 1.5, zoom: 0.34, flash: true, sfxAssetId: impact.id });
+      get().emojiBlitz(undefined, { count: 6, size: 170, duration: 0.7 });
+      get().notify("🌪️ MAX CHAOS delivered — impact + boom + emojis", "success");
+    } catch {
+      get().notify("Chaos engine sputtered — try again", "error");
+    }
+  },
+
+  importCaptions: (cues, opts = {}) => {
+    const s = get();
+    const clean = cues
+      .filter((c) => c.end > c.start && c.text.trim())
+      .slice(0, 600)
+      .map((c) => ({ ...c, start: Math.max(0, c.start) }));
+    if (!clean.length) {
+      s.notify("No usable caption cues found in that file", "error");
+      return;
+    }
+    const presetId = opts.presetId ?? "cap-subtitle";
+    set((st) => {
+      let tracks = st.tracks;
+      let target = tracks.find((x) => x.type === "video" && !x.locked && x.name.toLowerCase() === "captions");
+      if (!target) {
+        target = makeTrack("video", "Captions");
+        tracks = [target, ...tracks];
+      }
+      const preset = TEXT_PRESETS.find((p) => p.id === presetId) ?? TEXT_PRESETS.find((p) => p.id === "cap-subtitle") ?? TEXT_PRESETS[0];
+      const clips = clean.map((cue) =>
+        makeClip({
+          trackId: target!.id,
+          kind: "text",
+          name: cue.text.replace(/\n/g, " ").slice(0, 32),
+          start: cue.start,
+          duration: clamp(cue.end - cue.start, 0.15, 12),
+          color: "#38bdf8",
+          text: { ...buildTextStyle(preset), content: cue.text },
+          transform: buildTextTransform(preset),
+        })
+      );
+      tracks = tracks.map((tr) => (tr.id === target!.id ? { ...tr, clips: [...tr.clips, ...clips].sort((a, b) => a.start - b.start) } : tr));
+      return { tracks, selectedClipIds: [clips[0].id], selectedClipId: clips[0].id, ...record(st) };
+    });
+    get().notify(`💬 ${clean.length} captions imported to the Captions track`, "success");
+  },
+
+  boomerang: (opts = {}) => {
+    const g = get();
+    const t = g.currentTime;
+    const seconds = clamp(opts.seconds ?? 2, 0.4, 10);
+    const ok = (c: Clip, trackId: string) => {
+      const tr = g.tracks.find((x) => x.id === trackId);
+      const asset = g.mediaAssets.find((m) => m.id === c.mediaId);
+      return tr?.type === "video" && !tr.locked && c.kind === "media" && asset?.type === "video";
+    };
+    let target: Clip | null = null;
+    if (opts.clipId) {
+      const f = findClip(g.tracks, opts.clipId);
+      if (f && ok(f.clip, f.track.id) && t > f.clip.start + 0.05 && t <= f.clip.start + f.clip.duration) target = f.clip;
+    }
+    if (!target) {
+      const sel = g.selectedClipIds
+        .map((id) => findClip(g.tracks, id))
+        .find((f) => f && ok(f.clip, f.track.id) && t > f.clip.start + 0.05 && t <= f.clip.start + f.clip.duration);
+      if (sel) target = sel.clip;
+    }
+    if (!target) {
+      for (const tr of g.tracks) {
+        if (tr.type !== "video" || tr.locked) continue;
+        const c = tr.clips.find((x) => x.kind === "media" && t > x.start + 0.05 && t < x.start + x.duration);
+        if (c) {
+          target = c;
+          break;
+        }
+      }
+    }
+    if (!target) {
+      g.notify("Park the playhead over gameplay footage to boomerang it", "error");
+      return;
+    }
+    const segStart = Math.max(target.start, t - seconds);
+    const segEnd = Math.min(t, target.start + target.duration);
+    if (segEnd - segStart < 0.3) {
+      g.notify("Need at least 0.3s of footage behind the playhead", "error");
+      return;
+    }
+    const targetId = target.id;
+    set((s) => {
+      const found = findClip(s.tracks, targetId);
+      if (!found) return {};
+      const clip = found.clip;
+      const t2 = s.currentTime;
+      const a = Math.max(clip.start, t2 - seconds);
+      const b = Math.min(t2, clip.start + clip.duration);
+      if (b - a < 0.3) return {};
+      const group = expandLinked(s.tracks, [clip.id]);
+      const affected = new Set(group.map((id) => findClip(s.tracks, id)?.track.id));
+      const insertDur = (b - a) * 2;
+      const linkGroup = uid("link");
+      const boomerangClips: Clip[] = [];
+      for (const id of group) {
+        const f = findClip(s.tracks, id);
+        if (!f) continue;
+        const c = f.clip;
+        const asset = s.mediaAssets.find((m) => m.id === c.mediaId);
+        if (c.kind !== "media" || !asset || asset.type === "image") continue;
+        const sa = Math.max(a, c.start);
+        const sb = Math.min(b, c.start + c.duration);
+        if (sb - sa < 0.1) continue;
+        const piece = sliceClip(c, sa, sb);
+        const d = piece.duration;
+        const fwd: Clip = { ...piece, id: uid("clip"), start: t2, freeze: false, reverse: false, speedRamp: undefined, transitionIn: undefined, linkGroup, name: `${c.name} ⇄` };
+        const rev: Clip = { ...fwd, id: uid("clip"), start: t2 + d, reverse: true, keyframes: {}, audio: { ...fwd.audio, muted: true }, name: `${c.name} ⏪` };
+        boomerangClips.push(fwd, rev);
+      }
+      if (!boomerangClips.length) return {};
+      let tracks = s.tracks.map((tr) => {
+        if (!affected.has(tr.id) || tr.locked) return tr;
+        return { ...tr, clips: tr.clips.map((c) => (c.start >= t2 - 1e-6 ? { ...c, start: c.start + insertDur } : c)) };
+      });
+      tracks = tracks.map((tr) => {
+        const add = boomerangClips.filter((c) => c.trackId === tr.id);
+        return add.length ? { ...tr, clips: [...tr.clips, ...add].sort((x, y) => x.start - y.start) } : tr;
+      });
+      const main = boomerangClips[0];
+      return { tracks, selectedClipIds: [main.id], selectedClipId: main.id, ...record(s) };
+    });
+    get().notify("↩️ Boomerang inserted (forward + reversed, reverse audio muted)", "success");
+  },
+
+  armFocusPick: (armed, opts) =>
+    set({
+      focusPickArmed: armed,
+      focusPickZoom: opts?.zoom ?? get().focusPickZoom,
+      focusPickRamp: opts?.ramp ?? get().focusPickRamp,
+    }),
+
+  punchToFocusPoint: (px, py) => {
+    const g = get();
+    const t = g.currentTime;
+    const isVideoMedia = (c: Clip, trackId: string) => {
+      const tr = g.tracks.find((x) => x.id === trackId);
+      return tr?.type === "video" && c.kind === "media" && !tr.locked;
+    };
+    let target: { clip: Clip } | null = null;
+    const sel = g.selectedClipIds
+      .map((id) => findClip(g.tracks, id))
+      .find((f) => f && isVideoMedia(f.clip, f.track.id) && t > f.clip.start + 0.02 && t < f.clip.start + f.clip.duration - 0.02);
+    if (sel) target = sel;
+    if (!target) {
+      for (const tr of g.tracks) {
+        if (tr.type !== "video" || tr.locked) continue;
+        const c = tr.clips.find((x) => x.kind === "media" && t > x.start + 0.02 && t < x.start + x.duration - 0.02);
+        if (c) {
+          target = { clip: c };
+          break;
+        }
+      }
+    }
+    if (!target) {
+      g.notify("Park the playhead over the clip you want to punch into", "error");
+      return;
+    }
+    const clipId = target.clip.id;
+    const zoomPct = g.focusPickZoom;
+    const ramp = clamp(g.focusPickRamp, 0.08, 3);
+    set((s) => {
+      const found = findClip(s.tracks, clipId);
+      if (!found) return {};
+      const clip = found.clip;
+      const t2 = s.currentTime;
+      const local = t2 - clip.start;
+      const anim = evaluateClip(clip, local);
+      const src = getPreviewEngine().getSource(clip, s.mediaAssets);
+      const bounds = getClipBounds(clip, t2, s.settings, src);
+      if (!bounds) {
+        get().notify("Clip media not ready yet — try again in a second", "error");
+        return {};
+      }
+      const s0 = Math.max(0.001, anim.scale);
+      const s1 = clamp(s0 * (1 + zoomPct / 100), 0.02, 12);
+      // Exact centre-on-point solve: the transform that maps the clicked content
+      // point to the frame centre at the new scale (crop & rotation cancel out).
+      const x1 = -((s1 / s0) * (px - s.settings.width / 2 - anim.x));
+      const y1 = -((s1 / s0) * (py - s.settings.height / 2 - anim.y));
+      const fps = s.settings.fps;
+      const endT = clamp(local + ramp, local + 1 / (4 * fps), Math.max(local + 1 / (4 * fps), clip.duration - 1 / (2 * fps)));
+      let keyframes = clip.keyframes;
+      keyframes = upsertKeyframe(keyframes, "x", local, anim.x);
+      keyframes = upsertKeyframe(keyframes, "x", endT, Math.round(x1));
+      keyframes = upsertKeyframe(keyframes, "y", local, anim.y);
+      keyframes = upsertKeyframe(keyframes, "y", endT, Math.round(y1));
+      keyframes = upsertKeyframe(keyframes, "scale", local, s0);
+      keyframes = upsertKeyframe(keyframes, "scale", endT, Math.round(s1 * 1000) / 1000);
+      const tracks = mapClips(s.tracks, [clip.id], (c) => ({ ...c, keyframes }));
+      return { tracks, selectedClipIds: [clip.id], selectedClipId: clip.id, focusPickArmed: false, ...record(s) };
+    });
+    get().notify("🎯 Punch focus locked — clicked point is now the zoom centre", "success");
+  },
+
+  toggleBeatGrid: () => {
+    const s = get();
+    if (s.beatGridOn) {
+      set({ beatGridOn: false });
+      return;
+    }
+    const withBeats = s.mediaAssets.filter((m) => m.beats && m.beats.times.length);
+    if (!withBeats.length) {
+      s.notify("No beat analysis yet — select the music clip → Audio tab → Detect beats", "error");
+      return;
+    }
+    const keep = s.beatGridAssetId && withBeats.some((m) => m.id === s.beatGridAssetId) ? s.beatGridAssetId : withBeats[0].id;
+    set({ beatGridOn: true, beatGridAssetId: keep });
+    get().notify(`🥁 Beat grid on — ${withBeats.find((m) => m.id === keep)?.name ?? "music"}`, "info");
+  },
+
+  setBeatGridAsset: (id) => set({ beatGridAssetId: id }),
 
   addSfxClip: (assetId) => {
     const s = get();

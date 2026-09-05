@@ -365,7 +365,7 @@ export interface ElementPreset {
   name: string;
   color: string;
   gradient?: { from: string; to: string; angle: number };
-  shape: "rectangle" | "ellipse";
+  shape: "rectangle" | "ellipse" | "arrow";
   width: number;
   height: number;
   cornerRadius: number;
@@ -403,4 +403,10 @@ export const ELEMENTS: ElementPreset[] = [
   { id: "accent-bars", name: "Accent Bars", color: "#ef4444", shape: "rectangle", width: 100, height: 5, cornerRadius: 0, group: "Overlays" },
   { id: "ring", name: "Ring Outline", color: "#ffffff", shape: "ellipse", width: 46, height: 82, cornerRadius: 0, strokeWidth: 14, strokeColor: "#ffffff", group: "Overlays" },
   { id: "thin-rule", name: "Thin Rule", color: "#ffffff", shape: "rectangle", width: 36, height: 0.4, cornerRadius: 2, group: "Overlays" },
+  // ── Callouts: circle & point at the sus thing ──
+  { id: "callout-ring-red", name: "Red Circle", color: "#ef4444", shape: "ellipse", width: 42, height: 75, cornerRadius: 0, strokeWidth: 14, strokeColor: "#ef4444", duration: 2.5, fadeIn: 0.06, fadeOut: 0.15, group: "Callouts" },
+  { id: "callout-ring-white", name: "White Circle", color: "#ffffff", shape: "ellipse", width: 42, height: 75, cornerRadius: 0, strokeWidth: 12, strokeColor: "#ffffff", duration: 2.5, fadeIn: 0.06, fadeOut: 0.15, group: "Callouts" },
+  { id: "callout-arrow-red", name: "Red Arrow", color: "#ef4444", shape: "arrow", width: 24, height: 15, cornerRadius: 0, duration: 2.5, fadeIn: 0.06, fadeOut: 0.15, group: "Callouts" },
+  { id: "callout-arrow-white", name: "White Arrow", color: "#ffffff", shape: "arrow", width: 24, height: 15, cornerRadius: 0, duration: 2.5, fadeIn: 0.06, fadeOut: 0.15, group: "Callouts" },
+  { id: "callout-box", name: "Red Box", color: "#ef4444", shape: "rectangle", width: 44, height: 56, cornerRadius: 0, strokeWidth: 10, strokeColor: "#ef4444", duration: 2.5, fadeIn: 0.06, fadeOut: 0.15, group: "Callouts" },
 ];

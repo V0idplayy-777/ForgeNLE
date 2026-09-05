@@ -3,7 +3,8 @@ import { useEditorStore } from "../../store/useEditorStore";
 import { generateFilmstrip, importFiles } from "../../lib/mediaImport";
 import { computeWaveform } from "../../lib/waveform";
 import { formatBytes, formatDuration } from "../../lib/utils";
-import { UploadCloud, Film, Music4, Image as ImageIcon, Plus, Trash2, Search, LayoutGrid, List, AlertTriangle } from "lucide-react";
+import { CaptureError, CaptureSession, startCameraCapture, startScreenCapture } from "../../lib/capture";
+import { UploadCloud, Film, Music4, Image as ImageIcon, Plus, Trash2, Search, LayoutGrid, List, AlertTriangle, MonitorUp, Camera } from "lucide-react";
 import { cn } from "../../utils/cn";
 import { Empty } from "../ui/controls";
 
@@ -48,6 +49,37 @@ export default function MediaBin() {
   const [filter, setFilter] = useState<"all" | "video" | "audio" | "image">("all");
   const [view, setView] = useState<"grid" | "list">("grid");
   const inputRef = useRef<HTMLInputElement>(null);
+  const [recording, setRecording] = useState<"screen" | "camera" | null>(null);
+  const sessionRef = useRef<CaptureSession | null>(null);
+  const notify = useEditorStore((s) => s.notify);
+
+  async function startCapture(kind: "screen" | "camera") {
+    if (recording) {
+      const session = sessionRef.current;
+      sessionRef.current = null;
+      setRecording(null);
+      if (session) {
+        setBusy("Finishing capture…");
+        try {
+          const file = await session.stop();
+          await ingestFiles([file], (b, l) => setBusy(b ? l ?? "Importing…" : null));
+        } catch {
+          notify("Capture could not be saved", "error");
+        } finally {
+          setBusy(null);
+        }
+      }
+      return;
+    }
+    try {
+      const session = kind === "screen" ? await startScreenCapture() : await startCameraCapture();
+      sessionRef.current = session;
+      setRecording(kind);
+      notify(kind === "screen" ? "🔴 Recording your screen — click the camera again to stop & import" : "🔴 Recording your camera — click again to stop & import", "info");
+    } catch (e) {
+      notify(e instanceof CaptureError ? e.message : "Capture failed to start", "error");
+    }
+  }
 
   const usage = new Map<string, number>();
   for (const t of tracks) for (const c of t.clips) if (c.mediaId) usage.set(c.mediaId, (usage.get(c.mediaId) ?? 0) + 1);
@@ -83,6 +115,26 @@ export default function MediaBin() {
         </div>
         <button onClick={() => setView(view === "grid" ? "list" : "grid")} className="flex h-7 w-7 items-center justify-center rounded-md text-neutral-400 hover:bg-white/5 hover:text-white" title="Toggle view">
           {view === "grid" ? <List size={13} /> : <LayoutGrid size={13} />}
+        </button>
+        <button
+          onClick={() => startCapture("screen")}
+          className={cn(
+            "flex h-7 items-center gap-1 rounded-md border px-2 text-[11px] font-medium transition-colors",
+            recording === "screen" ? "animate-pulse border-red-500 bg-red-500/20 text-red-300" : "border-white/10 bg-white/[0.05] text-neutral-300 hover:text-white"
+          )}
+          title={recording === "screen" ? "Stop & import the screen recording" : "Record your screen straight into the bin"}
+        >
+          <MonitorUp size={12} /> {recording === "screen" ? "Stop" : "Screen"}
+        </button>
+        <button
+          onClick={() => startCapture("camera")}
+          className={cn(
+            "flex h-7 items-center gap-1 rounded-md border px-2 text-[11px] font-medium transition-colors",
+            recording === "camera" ? "animate-pulse border-red-500 bg-red-500/20 text-red-300" : "border-white/10 bg-white/[0.05] text-neutral-300 hover:text-white"
+          )}
+          title={recording === "camera" ? "Stop & import the camera recording" : "Record your webcam (with mic) straight into the bin"}
+        >
+          <Camera size={12} /> {recording === "camera" ? "Stop" : "Cam"}
         </button>
         <button onClick={() => inputRef.current?.click()} className="flex h-7 items-center gap-1 rounded-md bg-indigo-500 px-2 text-[11px] font-semibold text-white hover:bg-indigo-400" title="Import media">
           <Plus size={12} /> Import

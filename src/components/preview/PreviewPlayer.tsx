@@ -71,6 +71,8 @@ export default function PreviewPlayer() {
   const tracksLen = useEditorStore((s) => s.tracks.length);
   const duration = useEditorStore((s) => getProjectDuration(s.tracks));
   const notify = useEditorStore((s) => s.notify);
+  const focusPickArmed = useEditorStore((s) => s.focusPickArmed);
+  const punchToFocusPoint = useEditorStore((s) => s.punchToFocusPoint);
 
   useEffect(() => {
     warmFonts();
@@ -195,19 +197,35 @@ export default function PreviewPlayer() {
         <div
           data-preview-stage
           ref={stageRef}
-          className="relative overflow-hidden rounded-md bg-black shadow-[0_0_0_1px_rgba(255,255,255,0.06),0_30px_80px_-20px_rgba(0,0,0,0.8)]"
+          className={cn("relative overflow-hidden rounded-md bg-black shadow-[0_0_0_1px_rgba(255,255,255,0.06),0_30px_80px_-20px_rgba(0,0,0,0.8)]", focusPickArmed && "cursor-crosshair")}
           style={{ width: stageSize.w, height: stageSize.h }}
           onPointerDown={(e) => {
-            if (e.target === e.currentTarget || (e.target as HTMLElement).tagName === "CANVAS") {
-              // Hit test top-most clip under pointer
-              const hit = hitTest(e, stageRef.current!, frameScale);
-              selectClip(hit);
+            if (e.target !== e.currentTarget && (e.target as HTMLElement).tagName !== "CANVAS") return;
+            // Armed punch-focus pick: click maps to project coords and sets the zoom target.
+            if (focusPickArmed) {
+              const rect = stageRef.current!.getBoundingClientRect();
+              const px = (e.clientX - rect.left) / frameScale;
+              const py = (e.clientY - rect.top) / frameScale;
+              punchToFocusPoint(px, py);
+              return;
             }
+            // Hit test top-most clip under pointer
+            const hit = hitTest(e, stageRef.current!, frameScale);
+            selectClip(hit);
           }}
         >
           <canvas ref={canvasRef} className="h-full w-full" style={{ imageRendering: "auto" }} />
           {showGrid && <GridOverlay />}
           {showSafeZones && <SafeZones />}
+          {focusPickArmed && (
+            <div className="pointer-events-none absolute inset-0 z-10 cursor-crosshair">
+              <div className="absolute left-1/2 top-6 -translate-x-1/2 rounded-full bg-red-500/90 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-white shadow-lg">
+                🎯 Click the punch target
+              </div>
+              <div className="absolute left-1/2 top-1/2 h-5 w-px -translate-x-1/2 -translate-y-1/2 bg-red-400/70" />
+              <div className="absolute left-1/2 top-1/2 h-px w-5 -translate-x-1/2 -translate-y-1/2 bg-red-400/70" />
+            </div>
+          )}
           {selectedClipId && <TransformGizmo clipId={selectedClipId} frameScale={frameScale} stageRef={stageRef} />}
           {tracksLen > 0 && duration === 0 && (
             <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-neutral-600">

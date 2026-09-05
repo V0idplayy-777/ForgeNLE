@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useEditorStore } from "../../store/useEditorStore";
 import { getProjectDuration, formatTimecode } from "../../lib/utils";
 import Ruler from "./Ruler";
@@ -26,6 +27,7 @@ import {
   ChevronsLeftRight,
   SeparatorVertical,
   MoveHorizontal,
+  Music2,
 } from "lucide-react";
 import { IconBtn } from "../ui/controls";
 import { cn } from "../../utils/cn";
@@ -61,6 +63,11 @@ export default function Timeline() {
   const redo = useEditorStore((s) => s.redo);
   const canUndo = useEditorStore((s) => s.past.length > 0 || s.pending !== null);
   const canRedo = useEditorStore((s) => s.future.length > 0);
+  const beatGridOn = useEditorStore((s) => s.beatGridOn);
+  const toggleBeatGrid = useEditorStore((s) => s.toggleBeatGrid);
+  const beatGridAssetId = useEditorStore((s) => s.beatGridAssetId);
+  const setBeatGridAsset = useEditorStore((s) => s.setBeatGridAsset);
+  const beatAssets = useEditorStore(useShallow((s) => s.mediaAssets.filter((m) => m.beats && m.beats.times.length > 0)));
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [snapLine, setSnapLine] = useState<number | null>(null);
@@ -205,6 +212,32 @@ export default function Timeline() {
   const totalTrackHeight = tracks.reduce((n, t) => n + TRACK_HEIGHTS[t.height], 0);
   const canLink = selectedClipIds.length > 1;
 
+  // Beat grid: map the chosen asset's source-relative beats onto timeline time.
+  const beatLines = useMemo(() => {
+    if (!beatGridOn) return [];
+    const asset = beatAssets.find((a) => a.id === beatGridAssetId) ?? beatAssets[0];
+    if (!asset?.beats) return [];
+    const out: { t: number; strength: number }[] = [];
+    for (const track of tracks) {
+      for (const c of track.clips) {
+        if (c.mediaId !== asset.id) continue;
+        for (let i = 0; i < asset.beats.times.length; i++) {
+          const b = asset.beats.times[i];
+          const local = (b - c.trimIn) / (c.speed || 1);
+          if (local < 0 || local >= c.duration) continue;
+          out.push({ t: c.start + local, strength: asset.beats.strengths[i] ?? 0.5 });
+        }
+      }
+    }
+    if (out.length > 900) {
+      out.sort((a, b) => b.strength - a.strength);
+      const kept = out.slice(0, 900);
+      kept.sort((a, b) => a.t - b.t);
+      return kept;
+    }
+    return out.sort((a, b) => a.t - b.t);
+  }, [beatGridOn, beatAssets, beatGridAssetId, tracks]);
+
   return (
     <TimelineContext.Provider value={ctx}>
       <div className="flex min-h-0 flex-1 flex-col border-t border-white/5 bg-[#0e0e10]">
@@ -257,6 +290,23 @@ export default function Timeline() {
           <IconBtn title="Ripple edit mode (R) — deleting closes gaps" active={rippleMode} onClick={toggleRipple}>
             <Split size={14} />
           </IconBtn>
+          <IconBtn title="Beat grid — draw the music's detected beats over the timeline (detect beats in Inspector → Audio first)" active={beatGridOn} onClick={toggleBeatGrid}>
+            <Music2 size={14} />
+          </IconBtn>
+          {beatGridOn && beatAssets.length > 1 && (
+            <select
+              value={beatGridAssetId ?? beatAssets[0]?.id ?? ""}
+              onChange={(e) => setBeatGridAsset(e.target.value)}
+              className="h-6 max-w-[130px] rounded border border-white/10 bg-[#1c1c20] px-1 text-[10px] text-neutral-300 outline-none"
+              title="Beat grid source"
+            >
+              {beatAssets.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </select>
+          )}
           <div className="mx-1 h-5 w-px bg-white/10" />
           <button className="toolbar-btn" onClick={() => addTrack("video")} title="Add video track">
             <Plus size={11} /> Video
@@ -335,6 +385,23 @@ export default function Timeline() {
 
             {tracks.length === 0 && (
               <div className="flex h-40 items-center justify-center text-xs text-neutral-600">No tracks — add a video or audio track above.</div>
+            )}
+
+            {/* Beat grid overlay */}
+            {beatLines.length > 0 && (
+              <div className="pointer-events-none absolute z-[15] overflow-hidden" style={{ top: 32, left: HEADER_W, width: contentWidth, height: totalTrackHeight }}>
+                {beatLines.map((b, i) => (
+                  <div
+                    key={i}
+                    className="absolute top-0 w-px"
+                    style={{
+                      left: b.t * zoom,
+                      height: "100%",
+                      background: b.strength > 0.72 ? "rgba(244,114,182,0.4)" : "rgba(244,114,182,0.16)",
+                    }}
+                  />
+                ))}
+              </div>
             )}
 
             {/* In/Out shading over tracks */}

@@ -10,7 +10,7 @@ import { MediaAsset } from "../types";
 import { uid } from "./utils";
 import { saveMediaBlob } from "./storage";
 
-export type SfxId = "whoosh" | "impact" | "pop" | "riser" | "bleep" | "airhorn";
+export type SfxId = "whoosh" | "impact" | "pop" | "riser" | "bleep" | "airhorn" | "vine-boom" | "scratch" | "trombone" | "chaching" | "dun-dun-dun";
 
 export interface SfxDef {
   id: SfxId;
@@ -28,6 +28,11 @@ export const SFX_DEFS: SfxDef[] = [
   { id: "riser", name: "Riser", hint: "Build-up before a drop or clutch", duration: 0.9, icon: "📈" },
   { id: "bleep", name: "Bleep", hint: "Censor tone (renders at any length)", duration: 1.0, icon: "🤐" },
   { id: "airhorn", name: "Airhorn", hint: "Meme victories and jumpscares", duration: 0.8, icon: "📯" },
+  { id: "vine-boom", name: "Vine Boom", hint: "Dramatic zoom on a sus moment", duration: 0.9, icon: "🔊" },
+  { id: "scratch", name: "Record Scratch", hint: "\"Yep, that's me\" freeze-frame", duration: 0.7, icon: "📀" },
+  { id: "trombone", name: "Sad Trombone", hint: "Fails, Ls and unfortunate events", duration: 1.7, icon: "🎷" },
+  { id: "chaching", name: "Cha-Ching", hint: "Wins, loot, sponsor segments", duration: 0.8, icon: "🪙" },
+  { id: "dun-dun-dun", name: "Dun Dun Dunnn", hint: "Dramatic reveal sting", duration: 1.6, icon: "🎭" },
 ];
 
 const SR = 44100;
@@ -75,7 +80,7 @@ function fadeEnds(x: Float32Array, ms = 5) {
   }
 }
 
-function renderSfx(id: SfxId, duration: number): Float32Array {
+export function renderSfx(id: SfxId, duration: number): Float32Array {
   const n = Math.max(1, Math.floor(duration * SR));
   const out = new Float32Array(n);
   if (id === "whoosh") {
@@ -139,6 +144,113 @@ function renderSfx(id: SfxId, duration: number): Float32Array {
       const trem = 0.92 + 0.08 * Math.sin((2 * Math.PI * 28 * i) / SR);
       const env = Math.min(1, t / 0.03) * Math.min(1, (1 - t) / 0.12);
       out[i] = Math.tanh(v * 0.9) * trem * env;
+    }
+  } else if (id === "vine-boom") {
+    // big detuned sub drop with a distorted thud and a soft noise slap
+    const nz = sweepLowpass(noiseBuffer(n), 900, 120);
+    let p1 = 0;
+    let p2 = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / n;
+      const f1 = 82 * Math.pow(0.55, t * 1.6); // slides down to ~45 Hz
+      p1 += (2 * Math.PI * f1) / SR;
+      p2 += (2 * Math.PI * f1 * 1.007) / SR;
+      const env = Math.min(1, t / 0.012) * Math.exp(-t * 5.2);
+      const sub = (Math.sin(p1) + Math.sin(p2)) * 0.6;
+      const driven = Math.tanh(sub * 2.4) * 0.7 + sub * 0.5;
+      const slap = nz[i] * Math.exp(-t * 34) * 1.5;
+      out[i] = driven * env + slap;
+    }
+  } else if (id === "scratch") {
+    // wobbling band-passed noise — record speeding up and slowing back down
+    const nz = noiseBuffer(n);
+    let lp = 0;
+    let lp2 = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / n;
+      // cutoff wobbles like vinyl pitch: up-down-up
+      const wobble = 0.5 + 0.5 * Math.sin(2 * Math.PI * 4.2 * t - Math.PI / 2);
+      const fc = 900 + 7200 * Math.pow(wobble, 1.5);
+      const alpha = 1 - Math.exp((-2 * Math.PI * fc) / SR);
+      lp += alpha * (nz[i] - lp);
+      const alpha2 = 1 - Math.exp((-2 * Math.PI * fc * 2.2) / SR);
+      lp2 += alpha2 * (lp - lp2);
+      const env = Math.sin(Math.PI * Math.min(1, t * 1.06)) ** 0.8;
+      out[i] = (lp2 * 3.2 + nz[i] * 0.12) * env;
+    }
+  } else if (id === "trombone") {
+    // four descending wah notes, the last one drooping with vibrato
+    const notes = [233.1, 207.7, 185.0, 174.6]; // Bb3 A3 F#3 A3-ish
+    const noteDur = [0.28, 0.28, 0.28, 0.82];
+    let idx = 0;
+    let localT = 0;
+    let phase = 0;
+    for (let i = 0; i < n; i++) {
+      while (idx < notes.length - 1 && localT > noteDur[idx]) {
+        localT -= noteDur[idx];
+        idx++;
+      }
+      let f = notes[idx];
+      const inNote = localT / noteDur[idx];
+      if (idx === notes.length - 1) {
+        f *= 1 - 0.06 * inNote; // droop
+        f *= 1 + 0.02 * Math.sin(2 * Math.PI * 5.5 * localT) * Math.min(1, inNote * 2); // vibrato
+      }
+      phase += (2 * Math.PI * f) / SR;
+      // muffled brass: saw through a mild lowpass feel (few harmonics)
+      let v = 0;
+      for (let h = 1; h <= 6; h++) v += Math.sin(phase * h) / h;
+      const env = Math.min(1, localT / 0.02) * Math.min(1, Math.max(0, (1 - inNote) / 0.15));
+      out[i] = Math.tanh(v * 0.75) * env * (idx === notes.length - 1 ? 0.9 : 0.75);
+      localT += 1 / SR;
+    }
+  } else if (id === "chaching") {
+    // coin clack + two bright bell dings
+    const nz = sweepLowpass(noiseBuffer(n), 6000, 2500);
+    const dings = [
+      { at: 0.02, f: 2489, g: 0.8 },
+      { at: 0.11, f: 3322, g: 0.9 },
+      { at: 0.2, f: 4978, g: 0.7 },
+    ];
+    for (let i = 0; i < n; i++) {
+      const t = i / SR;
+      let v = nz[i] * Math.exp(-t * 60) * 1.1;
+      for (const d of dings) {
+        const dt = t - d.at;
+        if (dt < 0) continue;
+        v += (Math.sin(2 * Math.PI * d.f * dt) + 0.4 * Math.sin(2 * Math.PI * d.f * 2.76 * dt)) * Math.exp(-dt * 9) * d.g;
+      }
+      out[i] = v;
+    }
+  } else if (id === "dun-dun-dun") {
+    // three dramatic stabs, last one lower with a pitch fall
+    const stab = 0.34;
+    const gap = 0.46;
+    let phase = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / SR;
+      let hit = -1;
+      let lt = 0;
+      if (t < stab) {
+        hit = 0;
+        lt = t;
+      } else if (t >= gap && t < gap + stab) {
+        hit = 1;
+        lt = t - gap;
+      } else if (t >= gap * 2) {
+        hit = 2;
+        lt = t - gap * 2;
+      }
+      if (hit < 0) {
+        out[i] = 0;
+        continue;
+      }
+      const f = (hit === 2 ? 146.8 : 196.0) * (hit === 2 ? 1 - Math.min(0.12, lt * 0.12) : 1);
+      phase += (2 * Math.PI * f) / SR;
+      let v = 0;
+      for (let h = 1; h <= 5; h++) v += Math.sin(phase * h + (h % 2 ? 0 : Math.PI / 2)) / h;
+      const env = Math.min(1, lt / 0.008) * (hit === 2 ? Math.exp(-lt * 2.6) : Math.exp(-lt * 8));
+      out[i] = Math.tanh(v * 1.15) * env * (hit === 2 ? 1 : 0.85);
     }
   }
   fadeEnds(out, 4);
