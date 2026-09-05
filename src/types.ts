@@ -241,7 +241,8 @@ export type TextAnim =
   | "blur"
   | "typewriter"
   | "pop"
-  | "reveal";
+  | "reveal"
+  | "wobble";
 
 export interface TextStyle {
   content: string;

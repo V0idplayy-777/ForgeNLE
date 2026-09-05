@@ -324,6 +324,7 @@ const TEXT_ANIMS: { value: TextAnim; label: string }[] = [
   { value: "blur", label: "Blur" },
   { value: "typewriter", label: "Typewriter" },
   { value: "reveal", label: "Reveal" },
+  { value: "wobble", label: "Wobble" },
 ];
 
 // ── Time remapping ──────────────────────────────────────────────────────────

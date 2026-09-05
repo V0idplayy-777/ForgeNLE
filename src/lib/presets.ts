@@ -76,6 +76,8 @@ export const LOOKS: LookPreset[] = [
   { id: "pastel", name: "Pastel", description: "Airy and soft", swatch: ["#fbcfe8", "#a5f3fc"], effects: { brightness: 108, contrast: 88, saturation: 82, temperature: 6, tint: 8 } },
   { id: "cyber", name: "Cyberpunk", description: "Magenta/cyan punch", swatch: ["#c026d3", "#06b6d4"], effects: { saturation: 150, contrast: 118, tint: 26, temperature: -14, vignette: 34 } },
   { id: "dream", name: "Dream", description: "Soft focus haze", swatch: ["#c4b5fd", "#fdf4ff"], effects: { brightness: 106, contrast: 86, saturation: 96, blur: 0.6, vignette: 22 } },
+  { id: "arcade", name: "Arcade", description: "Hyper-saturated gameplay pop", swatch: ["#22d3ee", "#f472b6"], effects: { saturation: 138, contrast: 112, exposure: 4, vignette: 16 } },
+  { id: "nightops", name: "Night Ops", description: "Cold crushed blacks for night raids", swatch: ["#0f172a", "#38bdf8"], effects: { temperature: -26, exposure: -10, contrast: 124, saturation: 84, vignette: 38 } },
 ];
 
 export function applyLook(fx: ClipEffects, look: LookPreset): ClipEffects {
@@ -308,6 +310,43 @@ export const TEXT_PRESETS: TextPreset[] = [
     transform: { x: -300, y: -260, rotation: 4 },
     duration: 1.3,
     preview: { bg: "linear-gradient(135deg,#831843,#500724)", fg: "#f472b6", sample: "OH NO", font: "Bebas Neue", weight: 400, size: 24 },
+  },
+  // ── Gaming: replay tags, callouts ──
+  {
+    id: "em-replay",
+    name: "REPLAY",
+    category: "Emphasis",
+    style: { content: "↺ REPLAY", fontFamily: "Oswald", fontWeight: 700, fontSize: 72, uppercase: true, color: "#ffffff", letterSpacing: 8, boxEnabled: true, boxColor: "#dc2626", boxPaddingX: 40, boxPaddingY: 16, boxRadius: 10, animIn: "slide-left", animInDuration: 0.25, animOut: "slide-right", animOutDuration: 0.22, shadow: false },
+    transform: { x: -560, y: -380 },
+    duration: 2.5,
+    preview: { bg: "linear-gradient(135deg,#0f172a,#1e293b)", fg: "#fff", sample: "↺ REPLAY", font: "Oswald", weight: 700, size: 15, box: "#dc2626" },
+  },
+  {
+    id: "em-clutch",
+    name: "CLUTCH",
+    category: "Emphasis",
+    style: { content: "CLUTCH!", fontFamily: "Anton", fontWeight: 400, fontSize: 210, uppercase: true, color: "#22d3ee", strokeWidth: 15, strokeColor: "#0a0a0a", letterSpacing: 0, animIn: "wobble", animInDuration: 0.4, animOut: "scale", animOutDuration: 0.22, shadow: true, shadowBlur: 0, shadowY: 12, shadowColor: "rgba(0,0,0,0.65)" },
+    transform: { y: -60 },
+    duration: 1.4,
+    preview: { bg: "linear-gradient(135deg,#083344,#0c4a6e)", fg: "#22d3ee", sample: "CLUTCH!", font: "Anton", weight: 400, size: 23 },
+  },
+  {
+    id: "em-easy",
+    name: "TOO EASY",
+    category: "Emphasis",
+    style: { content: "TOO EASY 😤", fontFamily: "Montserrat", fontWeight: 900, fontSize: 120, uppercase: true, color: "#a3e635", strokeWidth: 11, strokeColor: "#14532d", letterSpacing: -2, animIn: "wobble", animInDuration: 0.4, animOut: "fade", animOutDuration: 0.2, shadow: true, shadowBlur: 0, shadowY: 9, shadowColor: "rgba(0,0,0,0.55)" },
+    transform: { y: 220, rotation: -2 },
+    duration: 1.4,
+    preview: { bg: "linear-gradient(135deg,#052e16,#14532d)", fg: "#a3e635", sample: "TOO EASY", font: "Montserrat", weight: 900, size: 16 },
+  },
+  {
+    id: "em-wtf",
+    name: "BRO WHAT",
+    category: "Emphasis",
+    style: { content: "BRO WHAT?!", fontFamily: "Poppins", fontWeight: 800, fontSize: 150, uppercase: true, color: "#fda4af", strokeWidth: 12, strokeColor: "#4c0519", letterSpacing: -2, animIn: "wobble", animInDuration: 0.45, animOut: "scale", animOutDuration: 0.22, shadow: true, shadowBlur: 0, shadowY: 10, shadowColor: "rgba(0,0,0,0.6)" },
+    transform: { x: 260, y: -240, rotation: 5 },
+    duration: 1.3,
+    preview: { bg: "linear-gradient(135deg,#4c0519,#881337)", fg: "#fda4af", sample: "BRO WHAT?!", font: "Poppins", weight: 800, size: 15 },
   },
 ];
 

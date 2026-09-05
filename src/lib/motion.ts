@@ -20,7 +20,12 @@ export type MotionPresetId =
   | "spin-in"
   | "settle"
   | "swipe-in"
-  | "float";
+  | "float"
+  | "hit-shake"
+  | "explosion"
+  | "whip-pan"
+  | "crash-out"
+  | "tension";
 
 export interface MotionPresetDef {
   id: MotionPresetId;
@@ -213,6 +218,124 @@ export const MOTION_PRESETS: MotionPresetDef[] = [
     },
   },
   {
+    id: "hit-shake",
+    name: "Hit shake",
+    hint: "Violent short shake for punches, kills and impacts",
+    group: "Impact",
+    previewClass: "mp-hit",
+    build: ({ duration, width, height, strength }) => {
+      const T = moveLen(duration, 0.5);
+      const ax = 0.035 * width * strength;
+      const ay = 0.026 * height * strength;
+      const rot = 2.2 * strength;
+      const steps = 11;
+      const x: Keyframe[] = [kf(0, 0, "linear")];
+      const y: Keyframe[] = [kf(0, 0, "linear")];
+      const r: Keyframe[] = [kf(0, 0, "linear")];
+      for (let i = 1; i <= steps; i++) {
+        const t = (T * i) / steps;
+        const decay = Math.exp(-4.2 * (i / steps));
+        const last = i === steps;
+        const sx = i % 2 ? 1 : -0.85;
+        const sy = i % 2 ? -0.9 : 1;
+        x.push(kf(t, last ? 0 : ax * decay * sx, "linear"));
+        y.push(kf(t, last ? 0 : ay * decay * sy, "linear"));
+        r.push(kf(t, last ? 0 : rot * decay * (i % 2 ? -1 : 1), "linear"));
+      }
+      return { keyframes: { x, y, rotation: r } };
+    },
+  },
+  {
+    id: "explosion",
+    name: "Explosion",
+    hint: "Zoom blast with shake — kill confirms, TNT, clutch plays",
+    group: "Impact",
+    previewClass: "mp-explosion",
+    build: ({ duration, width, height, strength, startScale }) => {
+      const T = moveLen(duration, 0.7);
+      const peak = startScale * (1 + 0.38 * strength);
+      const rest = startScale * (1 + 0.16 * strength);
+      const ax = 0.018 * width * strength;
+      const ay = 0.014 * height * strength;
+      const steps = 12;
+      const x: Keyframe[] = [kf(0, 0, "linear")];
+      const y: Keyframe[] = [kf(0, 0, "linear")];
+      for (let i = 1; i <= steps; i++) {
+        const t = (T * i) / steps;
+        const decay = Math.exp(-3.2 * (i / steps));
+        const last = i === steps;
+        x.push(kf(t, last ? 0 : ax * decay * (i % 2 ? 1 : -0.8), "linear"));
+        y.push(kf(t, last ? 0 : ay * decay * (i % 2 ? -0.9 : 1), "linear"));
+      }
+      return {
+        keyframes: {
+          scale: [kf(0, startScale, "ease-out"), kf(moveLen(duration, 0.14), peak, "ease-in-out"), kf(T, rest, "ease-in-out")],
+          x,
+          y,
+        },
+        transform: { scale: rest },
+      };
+    },
+  },
+  {
+    id: "whip-pan",
+    name: "Whip pan",
+    hint: "Violent sideways whip — hides cuts, adds speed",
+    group: "Impact",
+    previewClass: "mp-whip",
+    build: ({ duration, width, strength }) => {
+      const T = moveLen(duration, 0.34);
+      const from = -0.42 * width * strength;
+      return {
+        keyframes: {
+          x: [kf(0, from, "ease-out"), kf(T, 0, "ease-out")],
+          rotation: [kf(0, -5 * strength, "ease-out"), kf(T, 0, "ease-out")],
+        },
+        transform: { rotation: 0 },
+      };
+    },
+  },
+  {
+    id: "crash-out",
+    name: "Crash zoom out",
+    hint: "Slams in close, then snaps back to wide",
+    group: "Impact",
+    previewClass: "mp-crash",
+    build: ({ duration, strength, startScale }) => {
+      const peak = startScale * (1 + 0.5 * strength);
+      const t1 = moveLen(duration, 0.16);
+      const t2 = moveLen(duration, 0.6);
+      return {
+        keyframes: { scale: [kf(0, startScale, "ease-out"), kf(t1, peak, "ease-in-out"), kf(t2, startScale, "ease-in-out")] },
+        transform: { scale: startScale },
+      };
+    },
+  },
+  {
+    id: "tension",
+    name: "Tension jitter",
+    hint: "Subtle high-frequency tremble for the whole clip — 'wait for it…'",
+    group: "Impact",
+    previewClass: "mp-tension",
+    build: ({ duration, width, height, strength }) => {
+      const ax = 0.004 * width * strength;
+      const ay = 0.0035 * height * strength;
+      const cycles = Math.max(2, Math.round(duration * 9));
+      const N = cycles * 4;
+      const x: Keyframe[] = [];
+      const y: Keyframe[] = [];
+      for (let i = 0; i <= N; i++) {
+        const t = (duration * i) / N;
+        const p = (2 * Math.PI * i * cycles) / N;
+        // fade the jitter in over the first 10% so it doesn't pop
+        const env = clamp(t / Math.max(0.05, duration * 0.1), 0, 1);
+        x.push(kf(t, Math.sin(p) * ax * env, "linear"));
+        y.push(kf(t, Math.cos(p * 1.13) * ay * env, "linear"));
+      }
+      return { keyframes: { x, y } };
+    },
+  },
+  {
     id: "float",
     name: "Float / drift",
     hint: "Gentle looping drift — keeps static shots alive",
@@ -357,14 +480,15 @@ export function composeCell(target: ComposeTarget, cell: Cell, W: number, H: num
   let hv = fh;
   if (srcAspect > cellAspect) {
     // too wide: crop the sides so the visible rect matches the cell aspect
+    // (Crop is percent of source, 0..100)
     wv = cellAspect * fh;
-    const t = Math.max(0, 1 - wv / fw);
+    const t = Math.max(0, 1 - wv / fw) * 100;
     crop.left = t / 2;
     crop.right = t / 2;
   } else {
     // too tall: crop top/bottom
     hv = fw / cellAspect;
-    const t = Math.max(0, 1 - hv / fh);
+    const t = Math.max(0, 1 - hv / fh) * 100;
     crop.top = t / 2;
     crop.bottom = t / 2;
   }

@@ -41,6 +41,8 @@ export const SHORTCUTS: ShortcutDef[] = [
   { keys: "Mod + S", label: "Save project", group: "Project" },
   { keys: "Mod + E", label: "Export", group: "Project" },
   { keys: "?", label: "Show shortcuts", group: "Project" },
+  { keys: "G", label: "Impact hit at playhead", group: "Gaming" },
+  { keys: "Shift + G", label: "Instant replay (last 3s)", group: "Gaming" },
 ];
 
 interface Handlers {
@@ -267,6 +269,15 @@ export function useKeyboardShortcuts(handlers: Handlers = {}) {
           else if (rateRef.current === 0) applyRate(1);
           else if (rateRef.current < 8) applyRate(rateRef.current * 2);
           return;
+        case "g": {
+          e.preventDefault();
+          if (e.shiftKey) {
+            s.instantReplay();
+            return;
+          }
+          s.impactAtPlayhead();
+          return;
+        }
         case "f": {
           e.preventDefault();
           if (e.shiftKey) {
