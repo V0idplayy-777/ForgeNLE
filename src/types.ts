@@ -318,6 +318,9 @@ export interface SolidStyle {
   width: number;
   height: number;
   cornerRadius: number;
+  /** When > 0 the shape is drawn as an outline instead of a fill. */
+  strokeWidth?: number;
+  strokeColor?: string;
 }
 
 export function defaultSolid(): SolidStyle {

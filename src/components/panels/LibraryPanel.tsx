@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useEditorStore, LeftTab, useSelectedClip } from "../../store/useEditorStore";
 import MediaBin from "./MediaBin";
+import MotionLibrary from "./MotionLibrary";
 import { ELEMENTS, LOOKS, TEXT_PRESETS, TRANSITIONS, applyLook, buildTextStyle, buildTextTransform, TextPreset } from "../../lib/presets";
-import { FolderOpen, Type, Shapes, ArrowLeftRight, Palette, PanelLeftClose, Sparkles } from "lucide-react";
+import { FolderOpen, Type, Shapes, ArrowLeftRight, Palette, PanelLeftClose, Sparkles, Move3d } from "lucide-react";
 import { cn } from "../../utils/cn";
 import { TransitionType, defaultEffects } from "../../types";
 
@@ -12,6 +13,7 @@ const TABS: { id: LeftTab; label: string; icon: React.ReactNode }[] = [
   { id: "elements", label: "Elements", icon: <Shapes size={15} /> },
   { id: "transitions", label: "Transitions", icon: <ArrowLeftRight size={15} /> },
   { id: "looks", label: "Looks", icon: <Palette size={15} /> },
+  { id: "motion", label: "Motion", icon: <Move3d size={15} /> },
 ];
 
 export default function LibraryPanel() {
@@ -47,6 +49,7 @@ export default function LibraryPanel() {
           {tab === "elements" && <ElementsLibrary />}
           {tab === "transitions" && <TransitionsLibrary />}
           {tab === "looks" && <LooksLibrary />}
+          {tab === "motion" && <MotionLibrary />}
         </div>
       </div>
     </div>
@@ -58,7 +61,7 @@ export default function LibraryPanel() {
 function TextLibrary() {
   const addTextClip = useEditorStore((s) => s.addTextClip);
   const [cat, setCat] = useState<"All" | TextPreset["category"]>("All");
-  const cats: ("All" | TextPreset["category"])[] = ["All", "Titles", "Lower Thirds", "Captions", "Social"];
+  const cats: ("All" | TextPreset["category"])[] = ["All", "Titles", "Lower Thirds", "Captions", "Social", "Emphasis"];
   const list = TEXT_PRESETS.filter((p) => cat === "All" || p.category === cat);
   return (
     <div className="flex h-full flex-col">
@@ -117,55 +120,99 @@ function TextLibrary() {
 
 function ElementsLibrary() {
   const addSolidClip = useEditorStore((s) => s.addSolidClip);
+  const groups = Array.from(new Set(ELEMENTS.map((e) => e.group ?? "Basics")));
   return (
     <div className="h-full overflow-y-auto p-2">
-      <p className="mb-2 px-1 text-[10px] leading-relaxed text-neutral-500">Solids, gradients and shapes. Use them as backgrounds, overlays (try blend modes) or design accents.</p>
-      <div className="grid grid-cols-3 gap-2">
-        {ELEMENTS.map((el) => (
-          <button
-            key={el.id}
-            onClick={() => {
-              if (el.id === "letterbox") {
-                // Two bars top/bottom
-                const s = useEditorStore.getState();
-                const barH = ((1 - (s.settings.width / 2.39) / s.settings.height) / 2) * 100;
-                const off = (s.settings.height / 2) * (1 - barH / 100);
-                addSolidClip({ color: "#000", width: 100, height: barH }, "Letterbox top", { transform: { x: 0, y: -off, scale: 1, rotation: 0 } });
-                addSolidClip({ color: "#000", width: 100, height: barH }, "Letterbox bottom", { transform: { x: 0, y: off, scale: 1, rotation: 0 } });
-                return;
-              }
-              addSolidClip(
-                { color: el.color, gradient: el.gradient, shape: el.shape, width: el.width, height: el.height, cornerRadius: el.cornerRadius },
-                el.name,
-                el.opacity !== undefined ? { effects: { ...defaultEffects(), opacity: el.opacity } } : {}
-              );
-            }}
-            className="group flex flex-col overflow-hidden rounded-lg border border-white/5 bg-white/[0.03] text-left hover:border-indigo-500/60"
-            title={`Add ${el.name} at playhead`}
-          >
-            <div className="relative flex aspect-square items-center justify-center bg-[repeating-conic-gradient(#2a2a2e_0_25%,#1b1b1f_0_50%)] bg-[length:12px_12px] p-2">
-              {el.id === "letterbox" ? (
-                <div className="relative h-full w-full bg-neutral-700">
-                  <div className="absolute inset-x-0 top-0 h-[18%] bg-black" />
-                  <div className="absolute inset-x-0 bottom-0 h-[18%] bg-black" />
+      <p className="mb-2 px-1 text-[10px] leading-relaxed text-neutral-500">
+        Solids, gradients and shapes. Use them as backgrounds, overlays (try blend modes) or design accents. <b className="text-neutral-300">Overlays</b> are punch-in flashes, accent bars and outlines for high-energy edits.
+      </p>
+      {groups.map((g) => (
+        <div key={g} className="mb-3">
+          <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">{g}</div>
+          <div className="grid grid-cols-3 gap-2">
+            {ELEMENTS.filter((el) => (el.group ?? "Basics") === g).map((el) => (
+              <button
+                key={el.id}
+                onClick={() => {
+                  const s = useEditorStore.getState();
+                  if (el.id === "letterbox") {
+                    // Two bars top/bottom
+                    const barH = ((1 - (s.settings.width / 2.39) / s.settings.height) / 2) * 100;
+                    const off = (s.settings.height / 2) * (1 - barH / 100);
+                    addSolidClip({ color: "#000", width: 100, height: barH }, "Letterbox top", { transform: { x: 0, y: -off, scale: 1, rotation: 0 } });
+                    addSolidClip({ color: "#000", width: 100, height: barH }, "Letterbox bottom", { transform: { x: 0, y: off, scale: 1, rotation: 0 } });
+                    return;
+                  }
+                  if (el.id === "accent-bars") {
+                    // Accent strip top + bottom (gameplay-style frame)
+                    const off = (s.settings.height / 2) * (1 - el.height / 100);
+                    addSolidClip({ color: el.color, width: 100, height: el.height, cornerRadius: 0 }, "Accent bar top", { transform: { x: 0, y: -off, scale: 1, rotation: 0 } });
+                    addSolidClip({ color: el.color, width: 100, height: el.height, cornerRadius: 0 }, "Accent bar bottom", { transform: { x: 0, y: off, scale: 1, rotation: 0 } });
+                    return;
+                  }
+                  const solid: Parameters<typeof addSolidClip>[0] = {
+                    color: el.color,
+                    gradient: el.gradient,
+                    shape: el.shape,
+                    width: el.width,
+                    height: el.height,
+                    cornerRadius: el.cornerRadius,
+                    strokeWidth: el.strokeWidth,
+                    strokeColor: el.strokeColor,
+                  };
+                  if (el.id === "ring") {
+                    // keep it a true circle regardless of frame aspect
+                    solid.height = (el.width * s.settings.width) / s.settings.height;
+                  }
+                  addSolidClip(solid, el.name, {
+                    ...(el.duration !== undefined ? { duration: el.duration } : {}),
+                    ...(el.opacity !== undefined || el.fadeIn !== undefined || el.fadeOut !== undefined
+                      ? { effects: { ...defaultEffects(), opacity: el.opacity ?? 100, fadeIn: el.fadeIn ?? 0, fadeOut: el.fadeOut ?? 0 } }
+                      : {}),
+                  });
+                }}
+                className="group flex flex-col overflow-hidden rounded-lg border border-white/5 bg-white/[0.03] text-left hover:border-indigo-500/60"
+                title={`Add ${el.name} at playhead`}
+              >
+                <div className="relative flex aspect-square items-center justify-center bg-[repeating-conic-gradient(#2a2a2e_0_25%,#1b1b1f_0_50%)] bg-[length:12px_12px] p-2">
+                  {el.id === "letterbox" ? (
+                    <div className="relative h-full w-full bg-neutral-700">
+                      <div className="absolute inset-x-0 top-0 h-[18%] bg-black" />
+                      <div className="absolute inset-x-0 bottom-0 h-[18%] bg-black" />
+                    </div>
+                  ) : el.id === "accent-bars" ? (
+                    <div className="relative h-full w-full bg-neutral-700">
+                      <div className="absolute inset-x-0 top-0 h-[12%] bg-red-500" />
+                      <div className="absolute inset-x-0 bottom-0 h-[12%] bg-red-500" />
+                    </div>
+                  ) : el.strokeWidth ? (
+                    <div
+                      style={{
+                        width: "58%",
+                        height: "58%",
+                        borderRadius: "50%",
+                        border: `${Math.max(2, el.strokeWidth / 3)}px solid ${el.strokeColor ?? "#fff"}`,
+                      }}
+                    />
+                  ) : (
+                    <div
+                      style={{
+                        width: `${Math.max(12, Math.min(100, el.width))}%`,
+                        height: `${Math.max(12, Math.min(100, el.height))}%`,
+                        background: el.gradient ? `linear-gradient(${el.gradient.angle}deg, ${el.gradient.from}, ${el.gradient.to})` : el.color,
+                        borderRadius: el.shape === "ellipse" ? "50%" : Math.min(el.cornerRadius / 4, 20),
+                        opacity: el.opacity !== undefined && el.duration !== undefined ? Math.max(0.35, el.opacity / 100) : el.opacity !== undefined ? el.opacity / 100 : 1,
+                        boxShadow: "0 0 0 1px rgba(255,255,255,0.1)",
+                      }}
+                    />
+                  )}
                 </div>
-              ) : (
-                <div
-                  style={{
-                    width: `${Math.max(12, Math.min(100, el.width))}%`,
-                    height: `${Math.max(12, Math.min(100, el.height))}%`,
-                    background: el.gradient ? `linear-gradient(${el.gradient.angle}deg, ${el.gradient.from}, ${el.gradient.to})` : el.color,
-                    borderRadius: el.shape === "ellipse" ? "50%" : Math.min(el.cornerRadius / 4, 20),
-                    opacity: el.opacity !== undefined ? el.opacity / 100 : 1,
-                    boxShadow: "0 0 0 1px rgba(255,255,255,0.1)",
-                  }}
-                />
-              )}
-            </div>
-            <div className="truncate px-1.5 py-1 text-[10px] text-neutral-300">{el.name}</div>
-          </button>
-        ))}
-      </div>
+                <div className="truncate px-1.5 py-1 text-[10px] text-neutral-300">{el.name}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
