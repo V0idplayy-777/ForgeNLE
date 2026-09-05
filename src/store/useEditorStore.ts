@@ -37,11 +37,13 @@ import { allClips, clamp, findClip, getProjectDuration, pickClipColor, uid } fro
 import { baseValue, durationForSource, evaluateKeyframes, keyframeAt, removeKeyframeAt, scaleKeyframes, shiftKeyframes, sourceOffsetAt, sourceSpan, upsertKeyframe } from "../lib/keyframes";
 import { sourceTime } from "../lib/renderer";
 import { ComposeLayoutId, MotionPresetId, composeCell, composeLayoutById, layoutCells, motionPresetById } from "../lib/motion";
+import { BURST_STYLES, FacecamPresetId, ZoomCutMode, facecamPatch, montageRanges, popTrackAtTimes, zoomCutScaleTrack } from "../lib/gaming";
+import { TEXT_PRESETS, buildTextStyle, buildTextTransform } from "../lib/presets";
 import type { ScopeKind } from "../lib/scopes";
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type LeftTab = "media" | "text" | "elements" | "transitions" | "looks" | "motion";
+export type LeftTab = "media" | "text" | "elements" | "transitions" | "looks" | "motion" | "gaming";
 export type RightTab = "inspector" | "audio" | "color" | "keyframes";
 
 interface Snapshot {
@@ -176,6 +178,26 @@ export interface EditorState {
   resetCompose: (clipIds: string[]) => void;
   /** Jump-cut: deletes timeline spans from a clip and its linked partner, rippling later clips on the same tracks left. */
   removeSilenceSpans: (clipId: string, spans: [number, number][]) => string[];
+
+  // gaming (Gaming tab)
+  /** Impact hit at the playhead: splits, inserts a freeze hit-stop, shakes + punch-zooms the aftermath, flashes white. */
+  impactAtPlayhead: (opts?: { clipId?: string; freeze?: number; shake?: number; zoom?: number; flash?: boolean; sfxAssetId?: string }) => void;
+  /** Alternating punch-in scale keyframes across the given video clips (talking-head energy). */
+  applyZoomCuts: (clipIds: string[], opts?: { interval?: number; amount?: number; mode?: ZoomCutMode }) => void;
+  /** Slo-mo replay of the seconds before the playhead, inserted right after it with a REPLAY label. */
+  instantReplay: (opts?: { clipId?: string; seconds?: number; speed?: number; label?: boolean }) => void;
+  /** Condense the timeline to ±pre/post around every marker (kill-cut montage assembler). */
+  montageFromMarkers: (opts?: { pre?: number; post?: number; gap?: number; punch?: boolean }) => void;
+  /** Scale pops on every marker inside the given clips (montage pumping on the beat). */
+  punchToBeats: (clipIds: string[], opts?: { amount?: number }) => void;
+  /** Stuffs clips into a corner facecam cell with an optional border ring. */
+  applyFacecam: (clipIds: string[], preset: FacecamPresetId, opts?: { size?: number; border?: number; borderColor?: string }) => void;
+  /** Sequential meme pop-captions starting at the playhead. */
+  captionBurst: (lines: string[], opts?: { duration?: number; gap?: number }) => void;
+  /** Places an SFX asset at the playhead on a free audio track (layers, never overwrites). */
+  addSfxClip: (assetId: string) => void;
+  /** Censor box at the playhead: bleep tone + blurred adjustment-box. */
+  censorAtPlayhead: (assetId: string, opts?: { duration?: number; shape?: "ellipse" | "rectangle" }) => void;
 
   moveClips: (clipIds: string[], deltaTime: number, targetTrackId?: string, record?: boolean) => void;
   /** Absolute placement used by interactive drags: sets start/trackId for each clip. */
@@ -377,10 +399,17 @@ function resolveOverlapsIn(tracks: Track[], ids: string[]): Track[] {
   });
 }
 
+/** Shift a speed-ramp curve into a sliced piece's local time base. */
+function shiftRamp(ramp: Keyframe[] | undefined, delta: number, duration: number): Keyframe[] | undefined {
+  if (!ramp || !ramp.length) return ramp;
+  const moved = ramp.map((k) => ({ ...k, time: k.time + delta })).filter((k) => k.time >= -0.001 && k.time <= duration + 0.001);
+  return moved.length ? moved : undefined;
+}
+
 function splitClip(c: Clip, time: number): [Clip, Clip] | null {
   const local = time - c.start;
   if (local <= 0.02 || local >= c.duration - 0.02) return null;
-  const left: Clip = { ...c, duration: local, keyframes: shiftKeyframes(c.keyframes, 0, local) };
+  const left: Clip = { ...c, duration: local, keyframes: shiftKeyframes(c.keyframes, 0, local), speedRamp: shiftRamp(c.speedRamp, 0, local) };
   const right: Clip = {
     ...c,
     id: uid("clip"),
@@ -388,6 +417,7 @@ function splitClip(c: Clip, time: number): [Clip, Clip] | null {
     duration: c.duration - local,
     trimIn: c.trimIn + local * c.speed,
     keyframes: shiftKeyframes(c.keyframes, -local, c.duration - local),
+    speedRamp: shiftRamp(c.speedRamp, -local, c.duration - local),
     transitionIn: undefined,
     linkGroup: c.linkGroup,
   };
@@ -412,6 +442,7 @@ function sliceClip(c: Clip, a: number, b: number): Clip {
     duration: d,
     trimIn: c.trimIn + la * c.speed,
     keyframes: shiftKeyframes(c.keyframes, -la, d),
+    speedRamp: shiftRamp(c.speedRamp, -la, d),
     transitionIn: atHead ? c.transitionIn : undefined,
     effects: { ...c.effects, fadeIn: atHead ? c.effects.fadeIn : 0, fadeOut: atTail ? c.effects.fadeOut : 0 },
     audio: { ...c.audio, fadeIn: atHead ? c.audio.fadeIn : 0, fadeOut: atTail ? c.audio.fadeOut : 0 },
@@ -897,6 +928,596 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const result = resolveOverlapsIn(tracks, keptIds);
     set({ tracks: result, selectedClipIds: keptIds.length ? [keptIds[0]] : [], selectedClipId: keptIds[0] ?? null, ...record(s) });
     return keptIds;
+  },
+
+  // ── gaming ──
+  impactAtPlayhead: (opts = {}) => {
+    const g = get();
+    const t = g.currentTime;
+    const isVideoMedia = (c: Clip, trackId: string) => {
+      const tr = g.tracks.find((x) => x.id === trackId);
+      return tr?.type === "video" && c.kind === "media" && !tr.locked;
+    };
+    let target: Clip | null = null;
+    if (opts.clipId) {
+      const f = findClip(g.tracks, opts.clipId);
+      if (f && isVideoMedia(f.clip, f.track.id) && t > f.clip.start && t < f.clip.start + f.clip.duration) target = f.clip;
+    }
+    if (!target) {
+      const sel = g.selectedClipIds
+        .map((id) => findClip(g.tracks, id))
+        .find((f) => f && isVideoMedia(f.clip, f.track.id) && t > f.clip.start + 0.02 && t < f.clip.start + f.clip.duration - 0.02);
+      if (sel) target = sel.clip;
+    }
+    if (!target) {
+      for (const tr of g.tracks) {
+        if (tr.type !== "video" || tr.locked) continue;
+        const c = tr.clips.find((x) => x.kind === "media" && t > x.start + 0.02 && t < x.start + x.duration - 0.02);
+        if (c) {
+          target = c;
+          break;
+        }
+      }
+    }
+    if (!target) {
+      g.notify("Park the playhead over a video clip first", "error");
+      return;
+    }
+    const targetId = target.id;
+    const fps = g.settings.fps;
+    const fz = Math.round(Math.max(0, opts.freeze ?? 0.12) * fps) / fps;
+    const shakeStrength = opts.shake ?? 1;
+    const zoomAmount = opts.zoom ?? 0.24;
+    const wantFlash = opts.flash ?? true;
+    const flashDur = 0.22;
+    const sfxAssetId = opts.sfxAssetId;
+
+    set((s) => {
+      const found = findClip(s.tracks, targetId);
+      if (!found) return {};
+      const { clip } = found;
+      const t = s.currentTime;
+      const linkedIds = new Set(expandLinked(s.tracks, [clip.id]));
+      const asset = s.mediaAssets.find((m) => m.id === clip.mediaId);
+      const srcT = asset ? sourceTime(clip, t, asset) : clip.trimIn;
+      const W = s.settings.width;
+      const H = s.settings.height;
+
+      // Motion for the aftermath: violent shake + punch zoom.
+      const shakeDef = motionPresetById("hit-shake")!;
+      const punchDef = motionPresetById("punch-in")!;
+      const armRight = (right: Clip): Clip => {
+        const shake = shakeDef.build({ duration: right.duration, width: W, height: H, strength: Math.max(0.1, shakeStrength), startScale: right.transform.scale });
+        let kfs = { ...right.keyframes, ...shake.keyframes };
+        let transform = right.transform;
+        if (zoomAmount > 0.005) {
+          const punch = punchDef.build({ duration: right.duration, width: W, height: H, strength: zoomAmount / 0.24, startScale: right.transform.scale });
+          if (punch.keyframes.scale) kfs = { ...kfs, scale: punch.keyframes.scale };
+          if (punch.transform?.scale) transform = { ...transform, scale: punch.transform.scale };
+        }
+        return { ...right, keyframes: kfs, transform };
+      };
+
+      let rightId = "";
+      const tracks = s.tracks.map((tr) => {
+        if (tr.locked) return tr;
+        const isTargetTrack = tr.id === found.track.id;
+        const relevant = isTargetTrack ? tr.clips.find((c) => c.id === clip.id) : tr.clips.find((c) => linkedIds.has(c.id));
+        if (!relevant) {
+          if (fz <= 0) return tr;
+          return { ...tr, clips: tr.clips.map((c) => (c.start >= t - 1e-6 ? { ...c, start: c.start + fz } : c)) };
+        }
+        // Split the relevant clip at t (unless t sits at its head).
+        if (t <= relevant.start + 0.02) {
+          const shifted: Clip = { ...relevant, start: relevant.start + fz };
+          const armed = isTargetTrack && tr.type === "video" ? armRight(shifted) : shifted;
+          if (isTargetTrack) rightId = armed.id;
+          if (fz <= 0) return { ...tr, clips: tr.clips.map((c) => (c.id === relevant.id ? armed : c.start >= t - 1e-6 ? { ...c, start: c.start + fz } : c)) };
+          // freeze hold of the first frame ahead of the clip (video) — audio just gets a dropout gap
+          const hold: Clip | null =
+            tr.type === "video" && relevant.kind === "media"
+              ? {
+                  ...cloneClip(relevant),
+                  id: uid("clip"),
+                  name: `${relevant.name} (hit)`,
+                  start: t,
+                  duration: fz,
+                  trimIn: relevant.trimIn,
+                  freeze: true,
+                  reverse: false,
+                  speedRamp: undefined,
+                  keyframes: {},
+                  transitionIn: undefined,
+                  linkGroup: undefined,
+                  audioDetached: true,
+                }
+              : null;
+          const clips = tr.clips.flatMap((c) => {
+            if (c.id === relevant.id) return hold ? [hold, armed] : [armed];
+            if (c.start >= t - 1e-6) return [{ ...c, start: c.start + fz }];
+            return [c];
+          });
+          return { ...tr, clips };
+        }
+        if (t >= relevant.start + relevant.duration - 0.02) {
+          if (fz <= 0) return tr;
+          return { ...tr, clips: tr.clips.map((c) => (c.start >= t - 1e-6 ? { ...c, start: c.start + fz } : c)) };
+        }
+        const parts = splitClip(relevant, t);
+        if (!parts) return tr;
+        const [left, right] = parts;
+        const shiftedRight = { ...right, start: right.start + fz };
+        const armed = isTargetTrack && tr.type === "video" ? armRight(shiftedRight) : shiftedRight;
+        if (isTargetTrack) rightId = armed.id;
+        const hold: Clip | null =
+          fz > 0 && tr.type === "video" && relevant.kind === "media"
+            ? {
+                ...cloneClip(right),
+                id: uid("clip"),
+                name: `${relevant.name} (hit)`,
+                start: t,
+                duration: fz,
+                trimIn: isTargetTrack ? srcT : right.trimIn,
+                freeze: true,
+                reverse: false,
+                speedRamp: undefined,
+                keyframes: {},
+                transitionIn: undefined,
+                linkGroup: undefined,
+                audioDetached: true,
+              }
+            : null;
+        const clips = tr.clips.flatMap((c) => {
+          if (c.id === relevant.id) return hold ? [left, hold, armed] : [left, armed];
+          if (c.start >= t - 1e-6) return [{ ...c, start: c.start + fz }];
+          return [c];
+        });
+        return { ...tr, clips };
+      });
+
+      let out = tracks;
+      // White flash frame over the hit.
+      if (wantFlash) {
+        let flashTrack = out.find((tr) => tr.type === "video" && !tr.locked && !tr.clips.some((c) => t < c.start + c.duration && t + flashDur > c.start));
+        if (!flashTrack) {
+          const n = out.filter((tr) => tr.type === "video").length + 1;
+          flashTrack = makeTrack("video", trackLabel("video", n));
+          out = [flashTrack, ...out];
+        }
+        const flash = makeClip({
+          trackId: flashTrack.id,
+          kind: "solid",
+          name: "Impact flash",
+          start: t,
+          duration: flashDur,
+          color: "#e2e8f0",
+          solid: { ...defaultSolid(), color: "#ffffff", width: 100, height: 100, cornerRadius: 0 },
+          effects: { ...defaultEffects(), opacity: 75, fadeOut: flashDur },
+        });
+        out = out.map((tr) => (tr.id === flashTrack!.id ? { ...tr, clips: [...tr.clips, flash] } : tr));
+      }
+      // Optional impact SFX layered underneath.
+      if (sfxAssetId) {
+        const sfx = s.mediaAssets.find((m) => m.id === sfxAssetId);
+        if (sfx) {
+          let aTrack = out.find((tr) => tr.type === "audio" && !tr.locked && !tr.clips.some((c) => t < c.start + c.duration && t + sfx.duration > c.start));
+          if (!aTrack) {
+            const n = out.filter((tr) => tr.type === "audio").length + 1;
+            aTrack = makeTrack("audio", trackLabel("audio", n));
+            out = [...out, aTrack];
+          }
+          const hit = makeClip({ trackId: aTrack.id, kind: "media", mediaId: sfx.id, name: sfx.name.replace(/\.wav$/, ""), start: t, duration: sfx.duration, color: "#10b981" });
+          out = out.map((tr) => (tr.id === aTrack!.id ? { ...tr, clips: [...tr.clips, hit] } : tr));
+        }
+      }
+      return { tracks: out, selectedClipIds: rightId ? [rightId] : [], selectedClipId: rightId || null, ...record(s) };
+    });
+    get().notify("💥 Impact! Freeze + flash + shake applied", "success");
+  },
+
+  applyZoomCuts: (clipIds, opts = {}) => {
+    const s = get();
+    const interval = opts.interval ?? 1.5;
+    const amount = (opts.amount ?? 12) / 100;
+    const mode = opts.mode ?? "alternate";
+    const targets = allClips(s.tracks).filter((c) => clipIds.includes(c.id) && s.tracks.some((t) => t.id === c.trackId && t.type === "video"));
+    if (!targets.length) {
+      s.notify("Select one or more video clips first", "error");
+      return;
+    }
+    const ids = targets.map((c) => c.id);
+    set((st) => ({
+      tracks: mapClips(st.tracks, ids, (c) => ({
+        ...c,
+        keyframes: { ...c.keyframes, scale: zoomCutScaleTrack(c.duration, c.transform.scale, { interval, amount, mode, fps: st.settings.fps }) },
+      })),
+      ...record(st),
+    }));
+    get().notify(`Zoom cuts: punching every ${interval}s on ${targets.length} clip${targets.length > 1 ? "s" : ""}`, "success");
+  },
+
+  instantReplay: (opts = {}) => {
+    const g = get();
+    const t = g.currentTime;
+    const seconds = opts.seconds ?? 3;
+    const speed = clamp(opts.speed ?? 0.3, 0.1, 1);
+    const wantLabel = opts.label ?? true;
+    let target: Clip | null = null;
+    const ok = (c: Clip, trackId: string) => {
+      const tr = g.tracks.find((x) => x.id === trackId);
+      const asset = g.mediaAssets.find((m) => m.id === c.mediaId);
+      return tr?.type === "video" && !tr.locked && c.kind === "media" && asset?.type === "video";
+    };
+    if (opts.clipId) {
+      const f = findClip(g.tracks, opts.clipId);
+      if (f && ok(f.clip, f.track.id) && t > f.clip.start + 0.2 && t <= f.clip.start + f.clip.duration) target = f.clip;
+    }
+    if (!target) {
+      const sel = g.selectedClipIds
+        .map((id) => findClip(g.tracks, id))
+        .find((f) => f && ok(f.clip, f.track.id) && t > f.clip.start + 0.2 && t <= f.clip.start + f.clip.duration);
+      if (sel) target = sel.clip;
+    }
+    if (!target) {
+      g.notify("Park the playhead inside a gameplay clip (with footage behind it) first", "error");
+      return;
+    }
+    const targetId = target.id;
+    set((s) => {
+      const found = findClip(s.tracks, targetId);
+      if (!found) return {};
+      const { clip } = found;
+      const t = s.currentTime;
+      const segStart = Math.max(clip.start, t - seconds);
+      const segEnd = Math.min(t, clip.start + clip.duration);
+      if (segEnd - segStart < 0.3) return {};
+      const group = expandLinked(s.tracks, [clip.id]);
+      const affected = new Set(group.map((id) => findClip(s.tracks, id)?.track.id));
+      const replayGroup = uid("link");
+      const replayClips: Clip[] = [];
+      for (const id of group) {
+        const f = findClip(s.tracks, id);
+        if (!f) continue;
+        const c = f.clip;
+        const asset = s.mediaAssets.find((m) => m.id === c.mediaId);
+        if (c.kind !== "media" || !asset || asset.type === "image") continue;
+        const a = Math.max(segStart, c.start);
+        const b = Math.min(segEnd, c.start + c.duration);
+        if (b - a < 0.1) continue;
+        const piece = sliceClip(c, a, b);
+        const sourceLen = (b - a) * c.speed;
+        const dur = Math.max(0.1, sourceLen / speed);
+        const factor = dur / piece.duration;
+        replayClips.push({
+          ...piece,
+          id: uid("clip"),
+          start: t,
+          duration: dur,
+          speed,
+          speedRamp: undefined,
+          freeze: false,
+          name: `${c.name} ↺`,
+          keyframes: scaleKeyframes(piece.keyframes, factor),
+          transform: f.track.type === "video" ? { ...piece.transform, scale: piece.transform.scale * 1.12 } : piece.transform,
+          linkGroup: replayGroup,
+          transitionIn: undefined,
+        });
+      }
+      if (!replayClips.length) return {};
+      const replayDur = replayClips[0].duration;
+      let tracks = s.tracks.map((tr) => {
+        if (!affected.has(tr.id) || tr.locked) return tr;
+        return { ...tr, clips: tr.clips.map((c) => (c.start >= t - 1e-6 ? { ...c, start: c.start + replayDur } : c)) };
+      });
+      tracks = tracks.map((tr) => {
+        const add = replayClips.filter((c) => c.trackId === tr.id);
+        return add.length ? { ...tr, clips: [...tr.clips, ...add].sort((a, b) => a.start - b.start) } : tr;
+      });
+      if (wantLabel) {
+        const preset = TEXT_PRESETS.find((p) => p.id === "em-replay")!;
+        const labelDur = Math.min(2.2, replayDur);
+        let labelTrack = tracks.find((tr) => tr.type === "video" && !tr.locked && !tr.clips.some((c) => t < c.start + c.duration && t + labelDur > c.start));
+        if (!labelTrack) {
+          const n = tracks.filter((tr) => tr.type === "video").length + 1;
+          labelTrack = makeTrack("video", trackLabel("video", n));
+          tracks = [labelTrack, ...tracks];
+        }
+        const label = makeClip({
+          trackId: labelTrack.id,
+          kind: "text",
+          name: "REPLAY",
+          start: t,
+          duration: labelDur,
+          color: "#f59e0b",
+          text: { ...buildTextStyle(preset), content: "↺ REPLAY" },
+          transform: buildTextTransform(preset),
+        });
+        tracks = tracks.map((tr) => (tr.id === labelTrack!.id ? { ...tr, clips: [...tr.clips, label] } : tr));
+      }
+      const main = replayClips.find((c) => tracks.some((tr) => tr.id === c.trackId && tr.type === "video")) ?? replayClips[0];
+      return { tracks, selectedClipIds: [main.id], selectedClipId: main.id, ...record(s) };
+    });
+    get().notify(`⏪ Replay inserted (${seconds}s @ ${speed}×) — other tracks untouched`, "success");
+  },
+
+  montageFromMarkers: (opts = {}) => {
+    const g = get();
+    const pre = opts.pre ?? 1.5;
+    const post = opts.post ?? 1.5;
+    const gap = Math.max(0, opts.gap ?? 0);
+    const punch = opts.punch ?? true;
+    if (!g.markers.length) {
+      g.notify("Drop markers (M) on your kills and funny moments first", "error");
+      return;
+    }
+    const maxDur = getProjectDuration(g.tracks);
+    const ranges = montageRanges(g.markers, pre, post, maxDur);
+    if (!ranges.length) {
+      g.notify("No usable marker ranges", "error");
+      return;
+    }
+    const kept = ranges.reduce((acc, r) => acc + (r.end - r.start), 0);
+    const lockedTouched = g.tracks.some((t) => t.locked && t.clips.length);
+    set((s) => {
+      const punchDef = punch ? motionPresetById("punch-in") : null;
+      const W = s.settings.width;
+      const H = s.settings.height;
+      const groupIds = ranges.map(() => uid("link"));
+      const starts: number[] = [];
+      let cursor = 0;
+      const tracks = s.tracks.map((tr) => {
+        if (tr.locked) return tr;
+        const pieces: Clip[] = [];
+        ranges.forEach((r, ri) => {
+          if (tr === s.tracks.find((x) => x.id === tr.id)) void 0;
+          for (const c of tr.clips) {
+            const a = Math.max(r.start, c.start);
+            const b = Math.min(r.end, c.start + c.duration);
+            if (b - a < 0.08) continue;
+            const piece = sliceClip(c, a, b);
+            piece.id = uid("clip");
+            piece.start = 0; // placed below
+            piece.linkGroup = groupIds[ri];
+            piece.transitionIn = undefined;
+            (piece as Clip & { __off?: number }).__off = a - r.start;
+            if (punchDef && tr.type === "video" && piece.kind !== "adjustment") {
+              const built = punchDef.build({ duration: piece.duration, width: W, height: H, strength: 1, startScale: piece.transform.scale });
+              if (built.keyframes.scale) piece.keyframes = { ...piece.keyframes, scale: built.keyframes.scale };
+              if (built.transform?.scale) piece.transform = { ...piece.transform, scale: built.transform.scale };
+            }
+            pieces.push(piece);
+          }
+        });
+        return { ...tr, clips: pieces };
+      });
+      // lay the ranges back-to-back from zero
+      ranges.forEach((r, ri) => {
+        starts.push(cursor);
+        const len = r.end - r.start;
+        for (const tr of tracks) {
+          for (const p of tr.clips) {
+            if (p.linkGroup === groupIds[ri]) p.start = cursor + ((p as Clip & { __off?: number }).__off ?? 0);
+            delete (p as Clip & { __off?: number }).__off;
+          }
+        }
+        cursor += len + (ri < ranges.length - 1 ? gap : 0);
+      });
+      for (const tr of tracks) tr.clips.sort((a, b) => a.start - b.start);
+      const markers: Marker[] = ranges.map((r, i) => ({ id: uid("mk"), time: starts[i], label: r.label, color: r.color }));
+      const firstVideo = allClips(tracks).find((c) => tracks.some((tr) => tr.id === c.trackId && tr.type === "video"));
+      return {
+        tracks,
+        markers,
+        selectedClipIds: firstVideo ? [firstVideo.id] : [],
+        selectedClipId: firstVideo?.id ?? null,
+        currentTime: 0,
+        ...record(s),
+      };
+    });
+    get().notify(
+      `🎬 Montage: ${kept.toFixed(1)}s across ${ranges.length} moment${ranges.length > 1 ? "s" : ""} (was ${maxDur.toFixed(1)}s)${lockedTouched ? " — locked tracks untouched" : ""}`,
+      "success"
+    );
+  },
+
+  punchToBeats: (clipIds, opts = {}) => {
+    const s = get();
+    const amount = (opts.amount ?? 10) / 100;
+    const targets = allClips(s.tracks).filter((c) => clipIds.includes(c.id) && s.tracks.some((t) => t.id === c.trackId && t.type === "video"));
+    if (!targets.length) {
+      s.notify("Select one or more video clips first", "error");
+      return;
+    }
+    const hitsIn = (c: Clip) =>
+      s.markers.map((m) => m.time).filter((t) => t > c.start + 0.02 && t < c.start + c.duration - 0.02).map((t) => t - c.start);
+    if (!targets.some((c) => hitsIn(c).length)) {
+      s.notify("No markers inside the selected clips — detect beats or press M on the drops", "error");
+      return;
+    }
+    const ids = targets.map((c) => c.id);
+    set((st) => ({
+      tracks: mapClips(st.tracks, ids, (c) => {
+        const times = st.markers.map((m) => m.time).filter((t) => t > c.start + 0.02 && t < c.start + c.duration - 0.02).map((t) => t - c.start);
+        if (!times.length) return c;
+        return { ...c, keyframes: { ...c.keyframes, scale: popTrackAtTimes(c.duration, c.transform.scale, times, { amount }) } };
+      }),
+      ...record(st),
+    }));
+    get().notify(`🥁 Beat punch applied to ${targets.length} clip${targets.length > 1 ? "s" : ""}`, "success");
+  },
+
+  applyFacecam: (clipIds, preset, opts = {}) => {
+    const s = get();
+    const size = opts.size ?? 0.26;
+    const border = opts.border ?? 6;
+    const borderColor = opts.borderColor ?? "#ffffff";
+    const targets = allClips(s.tracks).filter((c) => {
+      if (!clipIds.includes(c.id) || c.kind !== "media") return false;
+      const tr = s.tracks.find((t) => t.id === c.trackId);
+      const asset = s.mediaAssets.find((m) => m.id === c.mediaId);
+      return tr?.type === "video" && !tr.locked && !!asset && asset.type !== "audio";
+    });
+    if (!targets.length) {
+      s.notify("Select your facecam clip (a video clip) first", "error");
+      return;
+    }
+    const ids = new Set(targets.map((c) => c.id));
+    set((st) => {
+      const W = st.settings.width;
+      const H = st.settings.height;
+      const borders: { clip: Clip; trackId: string; b: NonNullable<ReturnType<typeof facecamPatch>["border"]> }[] = [];
+      let tracks = st.tracks.map((tr) => ({
+        ...tr,
+        clips: tr.clips.map((c) => {
+          if (!ids.has(c.id)) return c;
+          const asset = st.mediaAssets.find((m) => m.id === c.mediaId);
+          const srcAspect = asset?.width && asset?.height ? asset.width / asset.height : null;
+          const patch = facecamPatch(preset, W, H, srcAspect, { size, border, borderColor });
+          if (patch.border) borders.push({ clip: c, trackId: tr.id, b: patch.border });
+          return { ...c, transform: patch.transform, fit: patch.fit, crop: patch.crop, cornerRadius: patch.cornerRadius };
+        }),
+      }));
+      for (const { clip, trackId, b } of borders) {
+        const idx = tracks.findIndex((t) => t.id === trackId);
+        let dest = -1;
+        for (let i = idx + 1; i < tracks.length; i++) {
+          const t = tracks[i];
+          if (t.type !== "video" || t.locked) continue;
+          if (!t.clips.some((c) => clip.start < c.start + c.duration && clip.start + clip.duration > c.start)) {
+            dest = i;
+            break;
+          }
+        }
+        const ring = makeClip({
+          kind: "solid",
+          name: "Facecam border",
+          start: clip.start,
+          duration: clip.duration,
+          color: "#64748b",
+          solid: { ...defaultSolid(), shape: b.shape, width: b.wPct, height: b.hPct, cornerRadius: b.cornerRadius, strokeWidth: b.strokeWidth, strokeColor: b.strokeColor },
+          transform: { x: b.x, y: b.y, scale: 1, rotation: 0 },
+          trackId: "",
+        });
+        if (dest >= 0) {
+          ring.trackId = tracks[dest].id;
+          tracks[dest] = { ...tracks[dest], clips: [...tracks[dest].clips, ring] };
+        } else {
+          const nt = makeTrack("video", `V${tracks.filter((t) => t.type === "video").length + 1}`);
+          ring.trackId = nt.id;
+          nt.clips.push(ring);
+          tracks = [...tracks.slice(0, idx + 1), nt, ...tracks.slice(idx + 1)];
+        }
+      }
+      return { tracks, ...record(st) };
+    });
+    get().notify("📹 Facecam placed — green screen? Enable Chroma key in the Inspector", "success");
+  },
+
+  captionBurst: (lines, opts = {}) => {
+    const s = get();
+    const clean = lines.map((l) => l.trim()).filter(Boolean).slice(0, 24);
+    if (!clean.length) {
+      s.notify("Type some captions first", "error");
+      return;
+    }
+    const dur = clamp(opts.duration ?? 0.7, 0.2, 5);
+    const gap = clamp(opts.gap ?? 0.08, 0, 2);
+    const total = clean.length * dur + (clean.length - 1) * gap;
+    const t = s.currentTime;
+    set((st) => {
+      let tracks = st.tracks;
+      let target = tracks.filter((x) => x.type === "video" && !x.locked).find((x) => !x.clips.some((c) => t < c.start + c.duration && t + total > c.start));
+      if (!target) {
+        const n = tracks.filter((x) => x.type === "video").length + 1;
+        target = makeTrack("video", trackLabel("video", n));
+        tracks = [target, ...tracks];
+      }
+      const clips = clean.map((line, i) => {
+        const style = BURST_STYLES[i % BURST_STYLES.length];
+        const preset = TEXT_PRESETS.find((p) => p.id === style.presetId) ?? TEXT_PRESETS[0];
+        return makeClip({
+          trackId: target!.id,
+          kind: "text",
+          name: line.slice(0, 28) || "Caption",
+          start: t + i * (dur + gap),
+          duration: dur,
+          color: "#f59e0b",
+          text: { ...buildTextStyle(preset), content: line },
+          transform: { x: style.x, y: style.y, scale: 1, rotation: style.rotation },
+        });
+      });
+      tracks = tracks.map((tr) => (tr.id === target!.id ? { ...tr, clips: [...tr.clips, ...clips].sort((a, b) => a.start - b.start) } : tr));
+      const ids = clips.map((c) => c.id);
+      return { tracks, selectedClipIds: ids, selectedClipId: ids[0], ...record(st) };
+    });
+    get().notify(`💬 Caption burst: ${clean.length} captions placed`, "success");
+  },
+
+  addSfxClip: (assetId) => {
+    const s = get();
+    const asset = s.mediaAssets.find((m) => m.id === assetId);
+    if (!asset) {
+      s.notify("SFX asset missing", "error");
+      return;
+    }
+    const t = s.currentTime;
+    set((st) => {
+      let tracks = st.tracks;
+      let target = tracks.filter((x) => x.type === "audio" && !x.locked).find((x) => !x.clips.some((c) => t < c.start + c.duration && t + asset.duration > c.start));
+      if (!target) {
+        const n = tracks.filter((x) => x.type === "audio").length + 1;
+        target = makeTrack("audio", trackLabel("audio", n));
+        tracks = [...tracks, target];
+      }
+      const clip = makeClip({ trackId: target.id, kind: "media", mediaId: asset.id, name: asset.name.replace(/\.wav$/, ""), start: t, duration: asset.duration, color: "#10b981" });
+      tracks = tracks.map((tr) => (tr.id === target!.id ? { ...tr, clips: [...tr.clips, clip].sort((a, b) => a.start - b.start) } : tr));
+      return { tracks, selectedClipIds: [clip.id], selectedClipId: clip.id, ...record(st) };
+    });
+  },
+
+  censorAtPlayhead: (assetId, opts = {}) => {
+    const s = get();
+    const asset = s.mediaAssets.find((m) => m.id === assetId);
+    if (!asset) {
+      s.notify("Bleep asset missing", "error");
+      return;
+    }
+    const dur = Math.min(Math.max(0.2, opts.duration ?? 1), asset.duration);
+    const shape = opts.shape ?? "ellipse";
+    const t = s.currentTime;
+    set((st) => {
+      let tracks = st.tracks;
+      let aTarget = tracks.filter((x) => x.type === "audio" && !x.locked).find((x) => !x.clips.some((c) => t < c.start + c.duration && t + dur > c.start));
+      if (!aTarget) {
+        const n = tracks.filter((x) => x.type === "audio").length + 1;
+        aTarget = makeTrack("audio", trackLabel("audio", n));
+        tracks = [...tracks, aTarget];
+      }
+      const bleep = makeClip({ trackId: aTarget.id, kind: "media", mediaId: asset.id, name: `Bleep ${dur.toFixed(1)}s`, start: t, duration: dur, color: "#ef4444" });
+      let vTarget = tracks.filter((x) => x.type === "video" && !x.locked).find((x) => !x.clips.some((c) => t < c.start + c.duration && t + dur > c.start));
+      if (!vTarget) {
+        const n = tracks.filter((x) => x.type === "video").length + 1;
+        vTarget = makeTrack("video", trackLabel("video", n));
+        tracks = [vTarget, ...tracks];
+      }
+      const box = makeClip({
+        trackId: vTarget.id,
+        kind: "adjustment",
+        name: "Censor blur",
+        start: t,
+        duration: dur,
+        color: "#a855f7",
+        effects: { ...defaultEffects(), blur: 18 },
+        mask: { ...defaultMask(), shape, x: 0, y: 0, width: 34, height: 44, feather: 24 },
+      });
+      tracks = tracks.map((tr) => {
+        if (tr.id === aTarget!.id) return { ...tr, clips: [...tr.clips, bleep].sort((a, b) => a.start - b.start) };
+        if (tr.id === vTarget!.id) return { ...tr, clips: [...tr.clips, box].sort((a, b) => a.start - b.start) };
+        return tr;
+      });
+      return { tracks, selectedClipIds: [box.id], selectedClipId: box.id, ...record(st) };
+    });
+    get().notify("🤐 Censor placed — move the box in Inspector → Mask", "success");
   },
 
   setClipReverse: (clipId, reverse) =>

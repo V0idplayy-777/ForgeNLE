@@ -2,13 +2,15 @@ import { useState } from "react";
 import { useEditorStore, LeftTab, useSelectedClip } from "../../store/useEditorStore";
 import MediaBin from "./MediaBin";
 import MotionLibrary from "./MotionLibrary";
+import GamingPanel from "./GamingPanel";
 import { ELEMENTS, LOOKS, TEXT_PRESETS, TRANSITIONS, applyLook, buildTextStyle, buildTextTransform, TextPreset } from "../../lib/presets";
-import { FolderOpen, Type, Shapes, ArrowLeftRight, Palette, PanelLeftClose, Sparkles, Move3d } from "lucide-react";
+import { FolderOpen, Type, Shapes, ArrowLeftRight, Palette, PanelLeftClose, Sparkles, Move3d, Gamepad2 } from "lucide-react";
 import { cn } from "../../utils/cn";
 import { TransitionType, defaultEffects } from "../../types";
 
 const TABS: { id: LeftTab; label: string; icon: React.ReactNode }[] = [
   { id: "media", label: "Media", icon: <FolderOpen size={15} /> },
+  { id: "gaming", label: "Gaming", icon: <Gamepad2 size={15} /> },
   { id: "text", label: "Text", icon: <Type size={15} /> },
   { id: "elements", label: "Elements", icon: <Shapes size={15} /> },
   { id: "transitions", label: "Transitions", icon: <ArrowLeftRight size={15} /> },
@@ -45,6 +47,7 @@ export default function LibraryPanel() {
         <div className="flex h-9 shrink-0 items-center border-b border-white/5 px-3 text-[11px] font-semibold uppercase tracking-wider text-neutral-400">{TABS.find((t) => t.id === tab)?.label}</div>
         <div className="min-h-0 flex-1">
           {tab === "media" && <MediaBin />}
+          {tab === "gaming" && <GamingPanel />}
           {tab === "text" && <TextLibrary />}
           {tab === "elements" && <ElementsLibrary />}
           {tab === "transitions" && <TransitionsLibrary />}

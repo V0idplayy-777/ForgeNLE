@@ -854,13 +854,14 @@ interface TextAnimState {
   dx: number;
   dy: number;
   scale: number;
+  rot: number; // radians of wobble rotation
   blur: number;
   reveal: number; // 0..1 fraction of chars visible (typewriter) or clip width (reveal)
   mode: "none" | "typewriter" | "reveal";
 }
 
 function textAnim(style: TextStyle, local: number, duration: number): TextAnimState {
-  const st: TextAnimState = { alpha: 1, dx: 0, dy: 0, scale: 1, blur: 0, reveal: 1, mode: "none" };
+  const st: TextAnimState = { alpha: 1, dx: 0, dy: 0, scale: 1, rot: 0, blur: 0, reveal: 1, mode: "none" };
   const inD = Math.min(style.animInDuration, duration);
   const outD = Math.min(style.animOutDuration, duration);
   const apply = (anim: TextStyle["animIn"], p: number, dir: 1 | -1) => {
@@ -910,11 +911,26 @@ function textAnim(style: TextStyle, local: number, duration: number): TextAnimSt
         st.mode = "reveal";
         st.reveal = Math.min(st.reveal, ease(p, "ease-in-out"));
         break;
+      case "wobble": {
+        // Big decaying oscillation while fading/scaling in, plus a constant meme-shake.
+        const w = 1 - e;
+        st.alpha *= Math.min(1, p * 2.5);
+        st.scale *= 0.6 + 0.4 * e;
+        st.rot += Math.sin(p * Math.PI * 5) * 0.14 * w;
+        st.dy += Math.sin(p * Math.PI * 4) * 26 * w;
+        break;
+      }
     }
   };
   if (style.animIn !== "none" && inD > 0 && local < inD) apply(style.animIn, clamp(local / inD, 0, 1), 1);
   const remaining = duration - local;
   if (style.animOut !== "none" && outD > 0 && remaining < outD) apply(style.animOut, clamp(remaining / outD, 0, 1), -1);
+  // Meme captions set to wobble keep jittering for their whole life (deterministic in time).
+  if (style.animIn === "wobble" || style.animOut === "wobble") {
+    st.dx += Math.sin(local * 31) * 3;
+    st.dy += Math.cos(local * 26) * 3;
+    st.rot += Math.sin(local * 22) * 0.028;
+  }
   return st;
 }
 
@@ -926,6 +942,7 @@ function drawText(ctx: CanvasRenderingContext2D, clip: Clip, local: number, W: n
   ctx.save();
   ctx.globalAlpha *= clamp(anim.alpha, 0, 1);
   ctx.translate(anim.dx, anim.dy);
+  if (anim.rot !== 0) ctx.rotate(anim.rot);
   ctx.scale(anim.scale, anim.scale);
   if (anim.blur > 0) {
     const f = ctx.filter;
