@@ -829,14 +829,21 @@ function drawSolid(ctx: CanvasRenderingContext2D, clip: Clip, W: number, H: numb
     g.addColorStop(1, s.gradient.to);
     fill = g;
   }
-  ctx.fillStyle = fill;
   ctx.beginPath();
   if (s.shape === "ellipse") {
     ctx.ellipse(0, 0, w / 2, h / 2, 0, 0, Math.PI * 2);
   } else {
     roundRectPath(ctx, x, y, w, h, s.cornerRadius);
   }
-  ctx.fill();
+  const stroke = (s.strokeWidth ?? 0) > 0;
+  if (stroke) {
+    ctx.lineWidth = s.strokeWidth!;
+    ctx.strokeStyle = s.strokeColor ?? "#ffffff";
+    ctx.stroke();
+  } else {
+    ctx.fillStyle = fill;
+    ctx.fill();
+  }
   return { x, y, w, h };
 }
 

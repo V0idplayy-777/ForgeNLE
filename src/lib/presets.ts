@@ -129,7 +129,7 @@ export function transitionName(type: TransitionType) {
 export interface TextPreset {
   id: string;
   name: string;
-  category: "Titles" | "Lower Thirds" | "Captions" | "Social";
+  category: "Titles" | "Lower Thirds" | "Captions" | "Social" | "Emphasis";
   style: Partial<TextStyle>;
   transform?: Partial<Transform>;
   duration?: number;
@@ -254,6 +254,61 @@ export const TEXT_PRESETS: TextPreset[] = [
     duration: 5,
     preview: { bg: "linear-gradient(135deg,#0c4a6e,#082f49)", fg: "#e0f2fe", sample: "“Quote”", font: "Lora", weight: 500, size: 18, italic: true },
   },
+  // ── Emphasis: reaction captions ──
+  {
+    id: "em-boom",
+    name: "BOOM",
+    category: "Emphasis",
+    style: { content: "BOOM!", fontFamily: "Anton", fontWeight: 400, fontSize: 230, uppercase: true, color: "#facc15", strokeWidth: 16, strokeColor: "#111111", letterSpacing: -2, animIn: "pop", animInDuration: 0.28, animOut: "scale", animOutDuration: 0.25, shadow: true, shadowBlur: 0, shadowY: 12, shadowColor: "rgba(0,0,0,0.65)" },
+    transform: { y: -40 },
+    duration: 1.2,
+    preview: { bg: "linear-gradient(135deg,#7f1d1d,#450a0a)", fg: "#facc15", sample: "BOOM!", font: "Anton", weight: 400, size: 24 },
+  },
+  {
+    id: "em-wait-what",
+    name: "WAIT WHAT",
+    category: "Emphasis",
+    style: { content: "WAIT WHAT?!", fontFamily: "Montserrat", fontWeight: 900, fontSize: 130, uppercase: true, color: "#ffffff", strokeWidth: 12, strokeColor: "#111827", letterSpacing: -3, animIn: "scale", animInDuration: 0.22, animOut: "fade", animOutDuration: 0.2, shadow: true, shadowBlur: 0, shadowY: 8, shadowColor: "rgba(0,0,0,0.6)" },
+    transform: { y: -260, rotation: -3 },
+    duration: 1.4,
+    preview: { bg: "linear-gradient(135deg,#4c1d95,#1e1b4b)", fg: "#fff", sample: "WAIT WHAT?!", font: "Montserrat", weight: 900, size: 15 },
+  },
+  {
+    id: "em-nope",
+    name: "NOPE",
+    category: "Emphasis",
+    style: { content: "NOPE", fontFamily: "Anton", fontWeight: 400, fontSize: 210, uppercase: true, color: "#ef4444", strokeWidth: 14, strokeColor: "#0a0a0a", letterSpacing: 2, animIn: "slide-left", animInDuration: 0.22, animOut: "slide-right", animOutDuration: 0.2, shadow: true, shadowBlur: 0, shadowY: 10, shadowColor: "rgba(0,0,0,0.6)" },
+    transform: { y: 120, rotation: 3 },
+    duration: 1.1,
+    preview: { bg: "linear-gradient(135deg,#111,#27272a)", fg: "#ef4444", sample: "NOPE", font: "Anton", weight: 400, size: 24 },
+  },
+  {
+    id: "em-lol",
+    name: "LOL",
+    category: "Emphasis",
+    style: { content: "LOL", fontFamily: "Poppins", fontWeight: 800, fontSize: 200, uppercase: true, color: "#a3e635", strokeWidth: 14, strokeColor: "#14532d", letterSpacing: -2, animIn: "pop", animInDuration: 0.25, animOut: "fade", animOutDuration: 0.22, shadow: true, shadowBlur: 0, shadowY: 10, shadowColor: "rgba(0,0,0,0.5)" },
+    transform: { x: 320, y: -300, rotation: -7 },
+    duration: 1.2,
+    preview: { bg: "linear-gradient(135deg,#166534,#052e16)", fg: "#a3e635", sample: "LOL", font: "Poppins", weight: 800, size: 24 },
+  },
+  {
+    id: "em-hold-up",
+    name: "HOLD UP",
+    category: "Emphasis",
+    style: { content: "HOLD UP", fontFamily: "Oswald", fontWeight: 700, fontSize: 120, uppercase: true, color: "#ffffff", letterSpacing: 6, boxEnabled: true, boxColor: "#dc2626", boxPaddingX: 44, boxPaddingY: 18, boxRadius: 8, animIn: "slide-up", animInDuration: 0.26, animOut: "slide-down", animOutDuration: 0.22, shadow: false },
+    transform: { y: 300 },
+    duration: 1.5,
+    preview: { bg: "linear-gradient(135deg,#0f172a,#1e293b)", fg: "#fff", sample: "HOLD UP", font: "Oswald", weight: 700, size: 15, box: "#dc2626" },
+  },
+  {
+    id: "em-omg",
+    name: "OH NO",
+    category: "Emphasis",
+    style: { content: "OH NO", fontFamily: "Bebas Neue", fontWeight: 400, fontSize: 190, uppercase: true, color: "#f472b6", strokeWidth: 14, strokeColor: "#111111", letterSpacing: 4, animIn: "scale", animInDuration: 0.25, animOut: "scale", animOutDuration: 0.22, shadow: true, shadowBlur: 0, shadowY: 10, shadowColor: "rgba(0,0,0,0.6)" },
+    transform: { x: -300, y: -260, rotation: 4 },
+    duration: 1.3,
+    preview: { bg: "linear-gradient(135deg,#831843,#500724)", fg: "#f472b6", sample: "OH NO", font: "Bebas Neue", weight: 400, size: 24 },
+  },
 ];
 
 export function buildTextStyle(preset: TextPreset): TextStyle {
@@ -278,19 +333,35 @@ export interface ElementPreset {
   opacity?: number;
   blend?: string;
   transform?: Partial<Transform>;
+  /** Timeline duration for short-lived overlays (seconds). */
+  duration?: number;
+  /** Effect fades (seconds). */
+  fadeIn?: number;
+  fadeOut?: number;
+  /** Draw as an outline instead of a fill (px stroke). */
+  strokeWidth?: number;
+  strokeColor?: string;
+  group?: string;
 }
 
 export const ELEMENTS: ElementPreset[] = [
-  { id: "black", name: "Black", color: "#000000", shape: "rectangle", width: 100, height: 100, cornerRadius: 0 },
-  { id: "white", name: "White", color: "#ffffff", shape: "rectangle", width: 100, height: 100, cornerRadius: 0 },
-  { id: "dim", name: "Dim Overlay", color: "#000000", shape: "rectangle", width: 100, height: 100, cornerRadius: 0, opacity: 45 },
-  { id: "gradient-dark", name: "Bottom Fade", color: "#000000", gradient: { from: "rgba(0,0,0,0)", to: "rgba(0,0,0,0.85)", angle: 180 }, shape: "rectangle", width: 100, height: 100, cornerRadius: 0 },
-  { id: "gradient-sunset", name: "Sunset", color: "#f97316", gradient: { from: "#f97316", to: "#db2777", angle: 135 }, shape: "rectangle", width: 100, height: 100, cornerRadius: 0 },
-  { id: "gradient-ocean", name: "Ocean", color: "#0ea5e9", gradient: { from: "#0ea5e9", to: "#1e3a8a", angle: 160 }, shape: "rectangle", width: 100, height: 100, cornerRadius: 0 },
-  { id: "gradient-mint", name: "Mint", color: "#34d399", gradient: { from: "#a7f3d0", to: "#0f766e", angle: 45 }, shape: "rectangle", width: 100, height: 100, cornerRadius: 0 },
-  { id: "card", name: "Card", color: "rgba(15,23,42,0.85)", shape: "rectangle", width: 60, height: 40, cornerRadius: 28 },
-  { id: "pill", name: "Pill", color: "#6366f1", shape: "rectangle", width: 30, height: 9, cornerRadius: 999 },
-  { id: "circle", name: "Circle", color: "#f59e0b", shape: "ellipse", width: 30, height: 53, cornerRadius: 0 },
-  { id: "bar", name: "Accent Bar", color: "#ef4444", shape: "rectangle", width: 1.2, height: 30, cornerRadius: 6 },
-  { id: "letterbox", name: "Letterbox 2.39", color: "#000000", shape: "rectangle", width: 100, height: 100, cornerRadius: 0 },
+  { id: "black", name: "Black", color: "#000000", shape: "rectangle", width: 100, height: 100, cornerRadius: 0, group: "Basics" },
+  { id: "white", name: "White", color: "#ffffff", shape: "rectangle", width: 100, height: 100, cornerRadius: 0, group: "Basics" },
+  { id: "dim", name: "Dim Overlay", color: "#000000", shape: "rectangle", width: 100, height: 100, cornerRadius: 0, opacity: 45, group: "Basics" },
+  { id: "gradient-dark", name: "Bottom Fade", color: "#000000", gradient: { from: "rgba(0,0,0,0)", to: "rgba(0,0,0,0.85)", angle: 180 }, shape: "rectangle", width: 100, height: 100, cornerRadius: 0, group: "Basics" },
+  { id: "gradient-sunset", name: "Sunset", color: "#f97316", gradient: { from: "#f97316", to: "#db2777", angle: 135 }, shape: "rectangle", width: 100, height: 100, cornerRadius: 0, group: "Basics" },
+  { id: "gradient-ocean", name: "Ocean", color: "#0ea5e9", gradient: { from: "#0ea5e9", to: "#1e3a8a", angle: 160 }, shape: "rectangle", width: 100, height: 100, cornerRadius: 0, group: "Basics" },
+  { id: "gradient-mint", name: "Mint", color: "#34d399", gradient: { from: "#a7f3d0", to: "#0f766e", angle: 45 }, shape: "rectangle", width: 100, height: 100, cornerRadius: 0, group: "Basics" },
+  { id: "card", name: "Card", color: "rgba(15,23,42,0.85)", shape: "rectangle", width: 60, height: 40, cornerRadius: 28, group: "Basics" },
+  { id: "pill", name: "Pill", color: "#6366f1", shape: "rectangle", width: 30, height: 9, cornerRadius: 999, group: "Basics" },
+  { id: "circle", name: "Circle", color: "#f59e0b", shape: "ellipse", width: 30, height: 53, cornerRadius: 0, group: "Basics" },
+  { id: "bar", name: "Accent Bar", color: "#ef4444", shape: "rectangle", width: 1.2, height: 30, cornerRadius: 6, group: "Basics" },
+  { id: "letterbox", name: "Letterbox 2.39", color: "#000000", shape: "rectangle", width: 100, height: 100, cornerRadius: 0, group: "Basics" },
+  // ── Overlays: flashes, bars, accents ──
+  { id: "flash-white", name: "Flash White", color: "#ffffff", shape: "rectangle", width: 100, height: 100, cornerRadius: 0, opacity: 88, duration: 0.45, fadeOut: 0.4, group: "Overlays" },
+  { id: "flash-red", name: "Flash Red", color: "#ef4444", shape: "rectangle", width: 100, height: 100, cornerRadius: 0, opacity: 78, duration: 0.5, fadeOut: 0.45, group: "Overlays" },
+  { id: "flash-amber", name: "Flash Amber", color: "#f59e0b", shape: "rectangle", width: 100, height: 100, cornerRadius: 0, opacity: 78, duration: 0.5, fadeOut: 0.45, group: "Overlays" },
+  { id: "accent-bars", name: "Accent Bars", color: "#ef4444", shape: "rectangle", width: 100, height: 5, cornerRadius: 0, group: "Overlays" },
+  { id: "ring", name: "Ring Outline", color: "#ffffff", shape: "ellipse", width: 46, height: 82, cornerRadius: 0, strokeWidth: 14, strokeColor: "#ffffff", group: "Overlays" },
+  { id: "thin-rule", name: "Thin Rule", color: "#ffffff", shape: "rectangle", width: 36, height: 0.4, cornerRadius: 2, group: "Overlays" },
 ];

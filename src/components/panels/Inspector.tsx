@@ -10,6 +10,7 @@ import ProjectSettingsPanel from "./ProjectSettingsPanel";
 import KeyframeEditor from "./KeyframeEditor";
 import { useMemo, useState } from "react";
 import { analyseBeats, decodeForAnalysis, thinBeats, BeatAnalysis, LoudnessInfo, measureLoudness, rmsEnvelope, speechRegions } from "../../lib/beats";
+import VoiceoverSection from "./VoiceoverPanel";
 
 const TABS: { id: RightTab; label: string; icon: React.ReactNode }[] = [
   { id: "inspector", label: "Inspector", icon: <SlidersHorizontal size={14} /> },
@@ -51,6 +52,10 @@ export default function Inspector() {
           <div className="flex h-full flex-col">
             {tab === "inspector" ? (
               <ProjectSettingsPanel />
+            ) : tab === "audio" ? (
+              <div className="text-xs">
+                <VoiceoverSection />
+              </div>
             ) : (
               <Empty icon={<MousePointerClick size={28} strokeWidth={1.25} />} title={multi > 1 ? `${multi} clips selected` : "Nothing selected"} hint="Select a clip on the timeline to edit its properties." />
             )}
@@ -551,6 +556,17 @@ function SolidSection({ clip }: { clip: Clip }) {
       <SliderRow label="Width" value={sd.width} min={0.5} max={200} step={0.5} unit="%" defaultValue={100} onChange={(v) => set({ width: v })} onCommit={commitHistory} />
       <SliderRow label="Height" value={sd.height} min={0.5} max={200} step={0.5} unit="%" defaultValue={100} onChange={(v) => set({ height: v })} onCommit={commitHistory} />
       {sd.shape === "rectangle" && <SliderRow label="Radius" value={sd.cornerRadius} min={0} max={500} step={1} unit="px" defaultValue={0} onChange={(v) => set({ cornerRadius: v })} onCommit={commitHistory} />}
+      <Row label="Outline">
+        <Toggle checked={(sd.strokeWidth ?? 0) > 0} onChange={(v) => set({ strokeWidth: v ? 14 : 0, strokeColor: sd.strokeColor ?? "#ffffff" }, true)} label="Draw as outline instead of fill" />
+      </Row>
+      {(sd.strokeWidth ?? 0) > 0 && (
+        <>
+          <SliderRow label="Stroke" value={sd.strokeWidth ?? 14} min={1} max={80} step={1} unit="px" defaultValue={14} onChange={(v) => set({ strokeWidth: v })} onCommit={commitHistory} />
+          <Row label="Stroke color">
+            <ColorField value={sd.strokeColor ?? "#ffffff"} onChange={(v) => set({ strokeColor: v })} onCommit={commitHistory} allowAlpha />
+          </Row>
+        </>
+      )}
     </Section>
   );
 }
@@ -732,6 +748,7 @@ function AudioPanel({ clip, track }: { clip: Clip; track: Track }) {
       <div className="text-xs">
         <ClipHeader clip={clip} track={track} />
         <Empty icon={<Volume2 size={28} strokeWidth={1.25} />} title="This clip has no audio" hint={clip.audioDetached ? "Its audio lives on a linked clip on an audio track." : undefined} />
+        <VoiceoverSection />
       </div>
     );
   const db = a.volume <= 0 ? "-∞" : (20 * Math.log10(a.volume / 100)).toFixed(1);
@@ -754,10 +771,12 @@ function AudioPanel({ clip, track }: { clip: Clip; track: Track }) {
         <SliderRow label="Fade out" value={a.fadeOut} min={0} max={Math.min(10, clip.duration)} step={0.05} unit="s" defaultValue={0} onChange={(v) => set({ fadeOut: v })} onCommit={commitHistory} />
       </Section>
       <LoudnessSection clip={clip} track={track} assetUrl={asset.url} />
+      <JumpCutSection clip={clip} track={track} assetUrl={asset.url} />
       <BeatSyncSection clip={clip} assetId={asset.id} assetUrl={asset.url} cached={asset.beats} />
       <Section title={`Track · ${track.name}`}>
         <SliderRow label="Track vol" value={track.volume} min={0} max={200} step={1} unit="%" defaultValue={100} onChange={(v) => setTrackVolume(track.id, v)} />
       </Section>
+      <VoiceoverSection />
     </div>
   );
 }
@@ -926,6 +945,101 @@ function LoudnessSection({ clip, track, assetUrl }: { clip: Clip; track: Track; 
             </div>
           )}
         </>
+      )}
+    </Section>
+  );
+}
+
+// ── Jump cut: silence remover ───────────────────────────────────────────────
+
+function JumpCutSection({ clip, track, assetUrl }: { clip: Clip; track: Track; assetUrl: string }) {
+  const removeSilenceSpans = useEditorStore((s) => s.removeSilenceSpans);
+  const addMarkers = useEditorStore((s) => s.addMarkers);
+  const removeMarkersByTag = useEditorStore((s) => s.removeMarkersByTag);
+  const markerCount = useEditorStore((s) => s.markers.filter((m) => m.tag === `silence:${clip.id}`).length);
+  const notify = useEditorStore((s) => s.notify);
+  const [busy, setBusy] = useState<"" | "mark" | "remove">("");
+  const [threshold, setThreshold] = useState(-38);
+  const [minSil, setMinSil] = useState(0.4);
+  const [padding, setPadding] = useState(0.06);
+
+  /** Source-time spans of audio → timeline [start, end] spans to cut. */
+  async function detectSpans(): Promise<[number, number][]> {
+    const buf = await decodeMemoised(assetUrl);
+    const span = sourceSpan(clip);
+    const s0 = clip.trimIn;
+    const s1 = clip.trimIn + span;
+    const env = rmsEnvelope(buf, 0.025);
+    // Loud (speech) regions; gaps under `minSil` are bridged so we only cut real dead air.
+    const speech = speechRegions(env, threshold, minSil, 0.08).filter(([a, b]) => b > s0 && a < s1);
+    // Silence = complement of speech inside the clip's source range
+    const silent: [number, number][] = [];
+    let cursor = s0;
+    for (const [a, b] of speech) {
+      if (a > cursor) silent.push([cursor, Math.min(a, s1)]);
+      cursor = Math.max(cursor, b);
+    }
+    if (cursor < s1) silent.push([cursor, s1]);
+    // breathe room around speech, drop slivers
+    const kept = silent
+      .map(([a, b]) => [a + padding, b - padding] as [number, number])
+      .filter(([a, b]) => b - a >= 0.12);
+    // source → timeline (constant speed; reverse plays the span backwards)
+    return kept.map(([a, b]) =>
+      clip.reverse
+        ? [clip.start + (s1 - b) / clip.speed, clip.start + (s1 - a) / clip.speed]
+        : [clip.start + (a - s0) / clip.speed, clip.start + (b - s0) / clip.speed]
+    );
+  }
+
+  async function run(mode: "mark" | "remove") {
+    if (clip.speedRamp && clip.speedRamp.length) {
+      notify("Silence removal doesn't support speed-ramped clips — flatten the ramp first", "error");
+      return;
+    }
+    setBusy(mode);
+    try {
+      const spans = await detectSpans();
+      if (!spans.length) {
+        notify("No silence found — try a lower threshold", "info");
+        return;
+      }
+      const total = spans.reduce((acc, [a, b]) => acc + (b - a), 0);
+      if (mode === "mark") {
+        addMarkers(spans.map(([a, b], i) => ({ time: a, label: `Silence ${i + 1} (${(b - a).toFixed(2)}s)`, color: "#f43f5e" })), `silence:${clip.id}`);
+        notify(`${spans.length} silent spans marked (${total.toFixed(1)}s) — preview them, then hit Remove`, "success");
+      } else {
+        removeSilenceSpans(clip.id, spans);
+        removeMarkersByTag(`silence:${clip.id}`);
+        notify(`Jump cut: removed ${spans.length} silent span${spans.length === 1 ? "" : "s"} · ${total.toFixed(1)}s tighter`, "success");
+      }
+    } catch (e) {
+      notify("Couldn't analyse audio for silence removal", "error");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  return (
+    <Section title="Jump cut · silence remover" defaultOpen={false}>
+      <p className="mb-2 text-[10px] leading-relaxed text-neutral-500">
+        Detects quiet spans in {track.type === "audio" ? "this clip (and its linked video)" : "this clip (and its linked audio)"} and cuts the dead air out, rippling later clips on the same tracks left.
+      </p>
+      <SliderRow label="Threshold" value={threshold} min={-60} max={-20} step={1} unit="dB" defaultValue={-38} onChange={setThreshold} />
+      <SliderRow label="Min silence" value={minSil} min={0.15} max={2} step={0.05} precision={2} unit="s" defaultValue={0.4} onChange={setMinSil} />
+      <SliderRow label="Padding" value={padding} min={0} max={0.3} step={0.01} precision={2} unit="s" defaultValue={0.06} onChange={setPadding} />
+      <div className="mt-1 grid grid-cols-2 gap-1">
+        <Btn variant="ghost" onClick={() => run("mark")} disabled={busy !== ""}>
+          {busy === "mark" ? "Analysing…" : "Mark silences"}
+        </Btn>
+        <Btn variant="default" onClick={() => run("remove")} disabled={busy !== ""}>
+          {busy === "remove" ? "Analysing…" : "Remove silence"}
+        </Btn>
+      </div>
+      {markerCount > 0 && (
+        <button className="mt-1.5 text-[10px] text-neutral-500 hover:text-red-300" onClick={() => removeMarkersByTag(`silence:${clip.id}`)}>
+          Remove {markerCount} silence markers
+        </button>
       )}
     </Section>
   );

@@ -36,11 +36,12 @@ import {
 import { allClips, clamp, findClip, getProjectDuration, pickClipColor, uid } from "../lib/utils";
 import { baseValue, durationForSource, evaluateKeyframes, keyframeAt, removeKeyframeAt, scaleKeyframes, shiftKeyframes, sourceOffsetAt, sourceSpan, upsertKeyframe } from "../lib/keyframes";
 import { sourceTime } from "../lib/renderer";
+import { ComposeLayoutId, MotionPresetId, composeCell, composeLayoutById, layoutCells, motionPresetById } from "../lib/motion";
 import type { ScopeKind } from "../lib/scopes";
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type LeftTab = "media" | "text" | "elements" | "transitions" | "looks";
+export type LeftTab = "media" | "text" | "elements" | "transitions" | "looks" | "motion";
 export type RightTab = "inspector" | "audio" | "color" | "keyframes";
 
 interface Snapshot {
@@ -163,6 +164,18 @@ export interface EditorState {
   copyAttributes: (clipId: string) => void;
   pasteAttributes: (clipIds: string[], parts?: { transform?: boolean; effects?: boolean; audio?: boolean; text?: boolean; mask?: boolean; chromaKey?: boolean; speed?: boolean }) => void;
   setClipColor: (clipIds: string[], color: string) => void;
+
+  // motion / compose (Motion tab)
+  /** Applies a keyframed camera-move preset to the selected video-track clips. */
+  applyMotionPreset: (clipIds: string[], presetId: MotionPresetId, strength?: number) => void;
+  /** Clears all motion (transform) keyframes on the given clips. */
+  clearMotion: (clipIds: string[]) => void;
+  /** Arranges the selected clips into a split-screen composition. */
+  applyComposeLayout: (clipIds: string[], layoutId: ComposeLayoutId, opts?: { gap?: number }) => void;
+  /** Resets transform / fit / crop on the selected clips back to full frame. */
+  resetCompose: (clipIds: string[]) => void;
+  /** Jump-cut: deletes timeline spans from a clip and its linked partner, rippling later clips on the same tracks left. */
+  removeSilenceSpans: (clipId: string, spans: [number, number][]) => string[];
 
   moveClips: (clipIds: string[], deltaTime: number, targetTrackId?: string, record?: boolean) => void;
   /** Absolute placement used by interactive drags: sets start/trackId for each clip. */
@@ -384,6 +397,25 @@ function splitClip(c: Clip, time: number): [Clip, Clip] | null {
   left.audio = { ...left.audio, fadeOut: 0 };
   right.audio = { ...right.audio, fadeIn: 0 };
   return [left, right];
+}
+
+/** Extract the timeline range [a, b] out of a clip as its own clip (keeps the right media / keyframes). */
+function sliceClip(c: Clip, a: number, b: number): Clip {
+  const la = a - c.start;
+  const end = c.start + c.duration;
+  const d = b - a;
+  const atHead = la <= 0.001;
+  const atTail = b >= end - 0.001;
+  return {
+    ...c,
+    start: a,
+    duration: d,
+    trimIn: c.trimIn + la * c.speed,
+    keyframes: shiftKeyframes(c.keyframes, -la, d),
+    transitionIn: atHead ? c.transitionIn : undefined,
+    effects: { ...c.effects, fadeIn: atHead ? c.effects.fadeIn : 0, fadeOut: atTail ? c.effects.fadeOut : 0 },
+    audio: { ...c.audio, fadeIn: atHead ? c.audio.fadeIn : 0, fadeOut: atTail ? c.audio.fadeOut : 0 },
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -734,6 +766,138 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return { tracks: resolveOverlapsIn(tracks, ids), ...record(s) };
     }),
   setClipColor: (clipIds, color) => set((s) => ({ tracks: mapClips(s.tracks, clipIds, (c) => ({ ...c, color })), ...record(s) })),
+
+  // ── motion / compose ──
+  applyMotionPreset: (clipIds, presetId, strength = 1) =>
+    set((s) => {
+      const def = motionPresetById(presetId);
+      if (!def) return {};
+      const targets = new Set(clipIds);
+      const clipsOnVideo = allClips(s.tracks).filter((c) => targets.has(c.id) && s.tracks.find((t) => t.id === c.trackId)?.type === "video");
+      if (!clipsOnVideo.length) return {};
+      const tracks = mapClips(s.tracks, clipsOnVideo.map((c) => c.id), (c) => {
+        const built = def.build({ duration: c.duration, width: s.settings.width, height: s.settings.height, strength, startScale: c.transform.scale });
+        const kfs = { ...c.keyframes };
+        for (const [prop, arr] of Object.entries(built.keyframes) as [keyof KeyframeMap, Keyframe[]][]) {
+          if (arr && arr.length) kfs[prop] = arr;
+        }
+        return { ...c, keyframes: kfs, transform: { ...c.transform, ...(built.transform ?? {}) } };
+      });
+      return { tracks, ...record(s) };
+    }),
+
+  clearMotion: (clipIds) =>
+    set((s) => {
+      const tracks = mapClips(s.tracks, clipIds, (c) => {
+        const k = { ...c.keyframes };
+        for (const p of ["x", "y", "scale", "rotation"] as const) delete k[p];
+        return { ...c, keyframes: k };
+      });
+      return { tracks, ...record(s) };
+    }),
+
+  applyComposeLayout: (clipIds, layoutId, opts) =>
+    set((s) => {
+      const def = composeLayoutById(layoutId);
+      if (!def) return {};
+      const W = s.settings.width;
+      const H = s.settings.height;
+      // Order: topmost track first (facecam usually lives above gameplay), then start time.
+      const order = new Map(s.tracks.map((t, i) => [t.id, i]));
+      const targets = allClips(s.tracks)
+        .filter((c) => clipIds.includes(c.id) && order.get(c.trackId) !== undefined && s.tracks.find((t) => t.id === c.trackId)?.type === "video" && c.kind !== "adjustment")
+        .sort((a, b) => (order.get(a.trackId)! - order.get(b.trackId)!) || (a.start - b.start));
+      if (!targets.length) return {};
+      const gapPx = Math.max(0, (opts?.gap ?? 0.8) * 0.01 * Math.min(W, H));
+      const cells = layoutCells(layoutId, targets.length);
+      const patchById = new Map<string, Partial<Clip>>();
+      targets.slice(0, cells.length).forEach((c, i) => {
+        const asset = c.mediaId ? s.mediaAssets.find((m) => m.id === c.mediaId) : undefined;
+        const srcAspect = asset?.width && asset?.height ? asset.width / asset.height : null;
+        const patch = composeCell({ clip: c, srcAspect }, cells[i], W, H, gapPx);
+        patchById.set(c.id, c.kind === "media" ? patch : { transform: patch.transform, fit: c.fit, crop: c.crop, cornerRadius: patch.cornerRadius });
+      });
+      if (!patchById.size) return {};
+      const tracks = mapClips(s.tracks, Array.from(patchById.keys()), (c) => ({ ...c, ...patchById.get(c.id)! }));
+      return { tracks, ...record(s) };
+    }),
+
+  resetCompose: (clipIds) =>
+    set((s) => {
+      const tracks = mapClips(s.tracks, clipIds, (c) => ({
+        ...c,
+        transform: { ...c.transform, x: 0, y: 0, scale: 1, rotation: 0 },
+        fit: "contain" as const,
+        crop: defaultCrop(),
+        cornerRadius: 0,
+      }));
+      return { tracks, ...record(s) };
+    }),
+
+  removeSilenceSpans: (clipId, spans) => {
+    const s = get();
+    const found = findClip(s.tracks, clipId);
+    if (!found || !spans.length) return [];
+    const fps = s.settings.fps;
+    const snap = (t: number) => Math.round(t * fps) / fps;
+    // Normalise: clip to clip bounds, snap to frames, drop slivers, sort.
+    const cs = found.clip.start;
+    const ce = found.clip.start + found.clip.duration;
+    const clean: [number, number][] = [];
+    for (let [a, b] of spans) {
+      a = snap(clamp(a, cs, ce));
+      b = snap(clamp(b, cs, ce));
+      if (b - a >= 1 / fps) clean.push([a, b]);
+    }
+    clean.sort((a, b) => a[0] - b[0]);
+    if (!clean.length) return [];
+
+    const groupIds = new Set(expandLinked(s.tracks, [clipId]));
+    const keptIds: string[] = [];
+    // Pieces are re-linked by their original start time (video piece ↔ audio piece
+    // at the same time) so each cut segment stays A/V-synced but can be moved
+    // independently after the cut.
+    const groupFor = (target: Clip, origStart: number, index: number) => (index === 0 ? target.linkGroup : `${target.linkGroup ?? "cut"}@${Math.round(origStart * 1000)}`);
+
+    const tracks = s.tracks.map((tr) => {
+      const target = tr.clips.find((c) => groupIds.has(c.id));
+      if (!target) return tr;
+      // clip spans to this clip's own bounds (linked partners can differ slightly)
+      const spans: [number, number][] = clean
+        .map(([a, b]) => [Math.max(a, target.start), Math.min(b, target.start + target.duration)] as [number, number])
+        .filter(([a, b]) => b - a >= 1 / fps);
+      // 1. slice the target clip around every removed span
+      const pieces: { clip: Clip; origStart: number }[] = [];
+      let cursor = target.start;
+      for (const [a, b] of spans) {
+        if (a > cursor + 0.001) pieces.push({ clip: sliceClip(target, cursor, a), origStart: cursor });
+        cursor = Math.max(cursor, b);
+      }
+      if (cursor < target.start + target.duration - 0.001) pieces.push({ clip: sliceClip(target, cursor, target.start + target.duration), origStart: cursor });
+      if (!pieces.length) return { ...tr, clips: tr.clips.filter((c) => c.id !== target.id) };
+      // 2. butt the kept pieces together starting at the original start
+      let next = target.start;
+      const laid: Clip[] = pieces.map(({ clip: p, origStart }, i) => {
+        const piece = i === 0 ? { ...p, id: target.id, start: next } : { ...p, id: uid("clip"), start: next, transitionIn: undefined, linkGroup: groupFor(target, origStart, i) };
+        next += piece.duration;
+        if (tr.type === "video" || i === 0) keptIds.push(piece.id);
+        return piece;
+      });
+      // 3. ripple every other clip on this track left by the time removed before it
+      const removedBefore = (t: number) => {
+        let acc = 0;
+        for (const [a, b] of clean) acc += Math.max(0, Math.min(b, t) - Math.min(a, t));
+        return acc;
+      };
+      const others = tr.clips
+        .filter((c) => c.id !== target.id)
+        .map((c) => ({ ...c, start: Math.max(0, c.start - removedBefore(c.start)) }));
+      return { ...tr, clips: [...others, ...laid].sort((a, b) => a.start - b.start) };
+    });
+    const result = resolveOverlapsIn(tracks, keptIds);
+    set({ tracks: result, selectedClipIds: keptIds.length ? [keptIds[0]] : [], selectedClipId: keptIds[0] ?? null, ...record(s) });
+    return keptIds;
+  },
 
   setClipReverse: (clipId, reverse) =>
     set((s) => ({ tracks: mapClips(s.tracks, expandLinked(s.tracks, [clipId]), (c) => ({ ...c, reverse })), ...record(s) })),
