@@ -43,6 +43,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { keys: "?", label: "Show shortcuts", group: "Project" },
   { keys: "G", label: "Impact hit at playhead", group: "Gaming" },
   { keys: "Shift + G", label: "Instant replay (last 3s)", group: "Gaming" },
+  { keys: "E", label: "Emoji blitz at playhead", group: "Gaming" },
 ];
 
 interface Handlers {
@@ -276,6 +277,11 @@ export function useKeyboardShortcuts(handlers: Handlers = {}) {
             return;
           }
           s.impactAtPlayhead();
+          return;
+        }
+        case "e": {
+          e.preventDefault();
+          void s.emojiBlitz();
           return;
         }
         case "f": {

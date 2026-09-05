@@ -832,6 +832,19 @@ function drawSolid(ctx: CanvasRenderingContext2D, clip: Clip, W: number, H: numb
   ctx.beginPath();
   if (s.shape === "ellipse") {
     ctx.ellipse(0, 0, w / 2, h / 2, 0, 0, Math.PI * 2);
+  } else if (s.shape === "arrow") {
+    // chunky meme arrow filling the box, pointing right (rotate to aim)
+    const sh = h * 0.34; // shaft half-height
+    const hx = w * 0.52; // head start
+    const hy = h * 0.52; // head half-height
+    ctx.moveTo(x, -sh);
+    ctx.lineTo(x + hx, -sh);
+    ctx.lineTo(x + hx, -hy);
+    ctx.lineTo(x + w / 2, 0);
+    ctx.lineTo(x + hx, hy);
+    ctx.lineTo(x + hx, sh);
+    ctx.lineTo(x, sh);
+    ctx.closePath();
   } else {
     roundRectPath(ctx, x, y, w, h, s.cornerRadius);
   }

@@ -1,9 +1,10 @@
 import { useRef, useState } from "react";
 import { useEditorStore } from "../store/useEditorStore";
-import { Undo2, Redo2, Type, FilePlus2, Download, Keyboard, Accessibility, Save, FolderOpen, ChevronDown, Check, Cloud, PanelLeft, PanelRight, Square, Bookmark, Layers } from "lucide-react";
+import { Undo2, Redo2, Type, FilePlus2, Download, Keyboard, Accessibility, Save, FolderOpen, ChevronDown, Check, Cloud, PanelLeft, PanelRight, Square, Bookmark, Layers, ListOrdered } from "lucide-react";
 import { IconBtn, Kbd } from "./ui/controls";
 import { SHORTCUTS } from "../hooks/useKeyboardShortcuts";
 import { exportProjectFile, importProjectFile, resetEverything, saveNow } from "../lib/project";
+import { buildChapters } from "../lib/chapters";
 import { modKey } from "../lib/utils";
 import { cn } from "../utils/cn";
 
@@ -61,6 +62,25 @@ export default function TopBar({ onExport, onAccessibility, shortcutsOpen, setSh
               <MenuItem icon={<Download size={12} />} label="Download project file (.forge.json)" onClick={() => { exportProjectFile(); setFileMenu(false); }} />
               <div className="my-1 h-px bg-white/5" />
               <MenuItem icon={<Download size={12} />} label="Export video…" kbd={`${mod}E`} onClick={() => { onExport(); setFileMenu(false); }} />
+              <MenuItem
+                icon={<ListOrdered size={12} />}
+                label="Copy YouTube chapters"
+                onClick={async () => {
+                  const s = useEditorStore.getState();
+                  if (!s.markers.length) {
+                    notify("No markers — tap M at each chapter moment first", "error");
+                    return;
+                  }
+                  const { text, warnings } = buildChapters(s.markers);
+                  try {
+                    await navigator.clipboard.writeText(text);
+                    notify(warnings.length ? `Copied ${text.split("\n").length} chapters (note: ${warnings[0]})` : `Copied ${text.split("\n").length} chapters — paste into the YouTube description`, "success");
+                  } catch {
+                    notify("Clipboard blocked by the browser", "error");
+                  }
+                  setFileMenu(false);
+                }}
+              />
               <div className="my-1 h-px bg-white/5" />
               <MenuItem icon={<Cloud size={12} />} label="Clear local storage & reset" danger onClick={async () => { if (confirm("This deletes the autosaved project and all cached media in this browser. Continue?")) await resetEverything(); setFileMenu(false); }} />
             </div>

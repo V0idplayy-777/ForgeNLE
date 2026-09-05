@@ -540,7 +540,7 @@ function SolidSection({ clip }: { clip: Clip }) {
   return (
     <Section title="Shape">
       <Row label="Shape">
-        <Segmented value={sd.shape} onChange={(v) => set({ shape: v }, true)} options={[{ value: "rectangle", label: "Rectangle" }, { value: "ellipse", label: "Ellipse" }]} size="xs" className="w-full" />
+        <Segmented value={sd.shape} onChange={(v) => set({ shape: v }, true)} options={[{ value: "rectangle", label: "Rect" }, { value: "ellipse", label: "Ellipse" }, { value: "arrow", label: "Arrow" }]} size="xs" className="w-full" />
       </Row>
       <Row label="Fill">
         <Segmented value={sd.gradient ? "gradient" : "solid"} onChange={(v) => set({ gradient: v === "gradient" ? sd.gradient ?? { from: sd.color, to: "#000000", angle: 180 } : undefined }, true)} options={[{ value: "solid", label: "Solid" }, { value: "gradient", label: "Gradient" }]} size="xs" className="w-full" />

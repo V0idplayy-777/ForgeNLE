@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useEditorStore } from "../../store/useEditorStore";
-import { canExportMp4, exportProject, ExportResult } from "../../lib/exportEngine";
+import { canExportMp4, exportProject, exportStill, ExportResult } from "../../lib/exportEngine";
+import { exportThumbnail, drawThumbnailText, defaultThumbnailOptions, ThumbnailOptions, ThumbPosition } from "../../lib/thumbnail";
 import { getProjectDuration, formatDuration, downloadBlob, safeFilename, formatBytes } from "../../lib/utils";
-import { Download, Loader2, CheckCircle2, AlertTriangle, Film, X } from "lucide-react";
-import { Modal, Row, Select, Segmented, Toggle, Btn, NumberField } from "../ui/controls";
+import { Download, Loader2, CheckCircle2, AlertTriangle, Film, X, ImageDown } from "lucide-react";
+import { Modal, Row, Select, Segmented, Toggle, Btn, NumberField, ColorField } from "../ui/controls";
 
 const QUALITY = [
   { id: "draft", label: "Draft", mult: 0.35, desc: "Small file, quick share" },
@@ -43,6 +44,68 @@ export default function ExportModal({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ExportResult | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Thumbnail maker
+  const [thumbOpen, setThumbOpen] = useState(false);
+  const [thumbOpts, setThumbOpts] = useState<ThumbnailOptions>(() => defaultThumbnailOptions());
+  const [thumbBusy, setThumbBusy] = useState(false);
+  const thumbStillRef = useRef<ImageBitmap | null>(null);
+  const thumbCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  const setThumb = (patch: Partial<ThumbnailOptions>) => setThumbOpts((o) => ({ ...o, ...patch }));
+
+  // Load the current frame once when the section is opened.
+  useEffect(() => {
+    if (!thumbOpen || thumbStillRef.current) return;
+    let alive = true;
+    (async () => {
+      try {
+        const s = useEditorStore.getState();
+        const blob = await exportStill({ tracks: s.tracks, assets: s.mediaAssets, settings: s.settings }, s.currentTime, s.settings.width, s.settings.height);
+        const bmp = await createImageBitmap(blob);
+        if (alive) thumbStillRef.current = bmp;
+        redrawThumb();
+      } catch {
+        /* frame render failed; thumbnail text can still preview */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [thumbOpen]);
+
+  function redrawThumb() {
+    const canvas = thumbCanvasRef.current;
+    if (!canvas) return;
+    canvas.width = settings.width;
+    canvas.height = settings.height;
+    const ctx = canvas.getContext("2d")!;
+    const still = thumbStillRef.current;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (still) ctx.drawImage(still, 0, 0, canvas.width, canvas.height);
+    drawThumbnailText(ctx, thumbOpts, canvas.width, canvas.height);
+  }
+
+  useEffect(() => {
+    if (thumbOpen) redrawThumb();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [thumbOpts, thumbOpen]);
+
+  async function saveThumbnail() {
+    setThumbBusy(true);
+    try {
+      const s = useEditorStore.getState();
+      const blob = await exportThumbnail({ tracks: s.tracks, assets: s.mediaAssets, settings: s.settings }, s.currentTime, thumbOpts, s.settings.width, s.settings.height);
+      downloadBlob(blob, `${safeFilename(s.projectName)}-thumbnail.png`);
+      notify("Thumbnail saved as PNG", "success");
+    } catch (e: any) {
+      notify(e?.message || "Could not render thumbnail", "error");
+    } finally {
+      setThumbBusy(false);
+    }
+  }
 
   const duration = getProjectDuration(tracks);
   const range: [number, number] | undefined = useRange && inPoint !== null && outPoint !== null ? [inPoint, outPoint] : undefined;
@@ -208,6 +271,57 @@ export default function ExportModal({ onClose }: { onClose: () => void }) {
           <Row label="Range">
             <Toggle checked={useRange} onChange={setUseRange} label={inPoint !== null && outPoint !== null ? `In → Out (${formatDuration(outPoint - inPoint)})` : "Set In/Out points (I / O) to export a section"} />
           </Row>
+
+          {/* ── Thumbnail maker ── */}
+          <div className="mt-3 rounded-lg border border-white/5 bg-white/[0.03]">
+            <button className="flex w-full items-center justify-between px-3 py-2 text-[11px] font-semibold text-neutral-200 hover:text-white" onClick={() => setThumbOpen((v) => !v)}>
+              <span className="flex items-center gap-2">
+                <ImageDown size={13} className="text-indigo-400" /> Thumbnail maker
+              </span>
+              <span className="text-[10px] font-normal text-neutral-500">{thumbOpen ? "hide" : "frame at playhead + big title → PNG"}</span>
+            </button>
+            {thumbOpen && (
+              <div className="px-3 pb-3">
+                <canvas ref={thumbCanvasRef} className="mb-2 w-full rounded-md border border-white/10 bg-black" style={{ aspectRatio: `${settings.width} / ${settings.height}` }} />
+                <input
+                  value={thumbOpts.title}
+                  onChange={(e) => setThumb({ title: e.target.value })}
+                  onKeyDown={(e) => e.stopPropagation()}
+                  placeholder="HE DID WHAT?!"
+                  className="mb-2 w-full rounded-md border border-white/5 bg-white/[0.04] px-2 py-1.5 text-[12px] font-bold uppercase text-white outline-none focus:border-indigo-500"
+                />
+                <Row label="Position">
+                  <Segmented
+                    value={thumbOpts.position}
+                    onChange={(v) => setThumb({ position: v as ThumbPosition })}
+                    options={[
+                      { value: "top", label: "Top" },
+                      { value: "center", label: "Center" },
+                      { value: "bottom", label: "Bottom" },
+                    ]}
+                    size="xs"
+                    className="w-full"
+                  />
+                </Row>
+                <Row label="Size">
+                  <NumberField value={Math.round(thumbOpts.fontSize * 100)} min={5} max={34} step={1} precision={0} unit="%" onChange={(v) => setThumb({ fontSize: v / 100 })} className="w-[72px]" />
+                  <ColorField value={thumbOpts.color} onChange={(v) => setThumb({ color: v })} onCommit={() => undefined} />
+                </Row>
+                <Row label="Outline">
+                  <NumberField value={thumbOpts.strokeWidth} min={0} max={30} step={1} precision={0} unit="px" onChange={(v) => setThumb({ strokeWidth: v })} className="w-[72px]" />
+                  <ColorField value={thumbOpts.strokeColor} onChange={(v) => setThumb({ strokeColor: v })} onCommit={() => undefined} />
+                </Row>
+                <Row label="Extras">
+                  <Toggle checked={thumbOpts.uppercase} onChange={(v) => setThumb({ uppercase: v })} label="UPPERCASE" />
+                  <Toggle checked={thumbOpts.scrim} onChange={(v) => setThumb({ scrim: v })} label="Scrim" />
+                </Row>
+                <Btn variant="default" className="mt-2 w-full" onClick={saveThumbnail} disabled={thumbBusy}>
+                  <ImageDown size={12} /> {thumbBusy ? "Rendering…" : `Save PNG (${settings.width}×${settings.height})`}
+                </Btn>
+              </div>
+            )}
+          </div>
+
           <div className="mt-3 rounded-lg border border-white/5 bg-white/[0.03] p-3 text-[11px] text-neutral-400">
             <div className="flex justify-between"><span>Output</span><span className="font-mono text-neutral-200">{width}×{height} @ {fps}fps</span></div>
             <div className="flex justify-between"><span>Duration</span><span className="font-mono text-neutral-200">{formatDuration(exportSeconds)} ({Math.round(exportSeconds * fps)} frames)</span></div>

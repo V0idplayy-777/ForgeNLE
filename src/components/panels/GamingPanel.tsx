@@ -4,7 +4,7 @@ import { useEditorStore } from "../../store/useEditorStore";
 import { Btn, ColorField, Kbd, Row, Section, Segmented, SliderRow, Toggle } from "../ui/controls";
 import { FACECAM_PRESETS, FacecamPresetId, ZoomCutMode } from "../../lib/gaming";
 import { SFX_DEFS, SfxId, ensureSfxAsset, previewSfx, sfxDef } from "../../lib/sfx";
-import { Zap, ZoomIn, Rewind, Clapperboard, Video, Type, Volume2, EyeOff, Play, Plus, Music } from "lucide-react";
+import { Zap, ZoomIn, Rewind, Clapperboard, Video, Type, Volume2, EyeOff, Play, Plus, Music, Smile, Tornado, Repeat, Crosshair } from "lucide-react";
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -39,8 +39,11 @@ export default function GamingPanel() {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto text-xs">
         <ImpactSection />
+        <EmojiBlitzSection />
         <ZoomCutsSection />
         <ReplaySection />
+        <BoomerangSection />
+        <PunchFocusSection />
         <MontageSection />
         <BeatPunchSection />
         <FacecamSection />
@@ -88,6 +91,106 @@ function ImpactSection() {
       </div>
       <Btn variant="primary" className="w-full" onClick={run} disabled={busy}>
         <Zap size={12} /> {busy ? "Hitting…" : "Impact at playhead"} <Kbd>G</Kbd>
+      </Btn>
+    </Section>
+  );
+}
+
+// ── 1b · Emoji blitz + MAX CHAOS ────────────────────────────────────────────
+
+function EmojiBlitzSection() {
+  const [text, setText] = useState("😱 🔥 💀 😂 👀 🤯");
+  const [count, setCount] = useState(6);
+  const [size, setSize] = useState(150);
+  const [withSfx, setWithSfx] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  async function blitz() {
+    const st = useEditorStore.getState();
+    setBusy(true);
+    try {
+      let sfxAssetId: string | undefined;
+      if (withSfx) sfxAssetId = await ensureBinned("pop");
+      const emojis = text.split(/[\s,]+/).map((e) => e.trim()).filter(Boolean);
+      st.emojiBlitz(emojis, { count, size, sfxAssetId });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function chaos() {
+    setBusy(true);
+    try {
+      await useEditorStore.getState().maxChaos();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Section title="⚡ Emoji blitz">
+      <p className="mb-2 text-[10px] leading-relaxed text-neutral-500">
+        Scatters pop-in emojis around the playhead with optional machine-gun pops. The internet's favourite reaction pack, zero downloads.
+      </p>
+      <input
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => e.stopPropagation()}
+        placeholder="😱 🔥 💀 😂"
+        className="mb-2 w-full rounded-md border border-white/5 bg-white/[0.04] px-2 py-1.5 text-[15px] leading-normal text-white outline-none focus:border-indigo-500"
+      />
+      <SliderRow label="Count" value={count} min={1} max={14} step={1} unit="" defaultValue={6} onChange={setCount} />
+      <SliderRow label="Size" value={size} min={60} max={320} step={10} unit="px" defaultValue={150} onChange={setSize} />
+      <div className="mb-2">
+        <Toggle checked={withSfx} onChange={setWithSfx} label="Pop SFX every other emoji" />
+      </div>
+      <Btn variant="default" className="w-full" onClick={blitz} disabled={busy}>
+        <Smile size={12} /> Blitz emojis <Kbd>E</Kbd>
+      </Btn>
+      <Btn variant="primary" className="mt-1.5 w-full bg-gradient-to-r from-red-500 to-orange-500" onClick={chaos} disabled={busy} title="Impact + vine boom + emoji storm">
+        <Tornado size={12} /> MAX CHAOS
+      </Btn>
+    </Section>
+  );
+}
+
+// ── 1c · Boomerang ──────────────────────────────────────────────────────────
+
+function BoomerangSection() {
+  const [seconds, setSeconds] = useState(2);
+  return (
+    <Section title="↩️ Boomerang" defaultOpen={false}>
+      <p className="mb-2 text-[10px] leading-relaxed text-neutral-500">
+        Loops the last few seconds forward-backward-right-after-the-playhead. Perfect for anything that deserves watching twice. Reverse audio is muted.
+      </p>
+      <SliderRow label="Length" value={seconds} min={0.5} max={8} step={0.25} unit="s" defaultValue={2} onChange={setSeconds} />
+      <Btn variant="default" className="w-full" onClick={() => useEditorStore.getState().boomerang({ seconds })}>
+        <Repeat size={12} /> Boomerang last {seconds}s
+      </Btn>
+    </Section>
+  );
+}
+
+// ── 1d · Punch focus (click-to-zoom) ────────────────────────────────────────
+
+function PunchFocusSection() {
+  const armed = useEditorStore((s) => s.focusPickArmed);
+  const arm = useEditorStore((s) => s.armFocusPick);
+  const [zoom, setZoom] = useState(70);
+  const [ramp, setRamp] = useState(0.35);
+  return (
+    <Section title="🎯 Punch focus" defaultOpen={false}>
+      <p className="mb-2 text-[10px] leading-relaxed text-neutral-500">
+        Arm it, then click anything in the preview — the clip whip-zooms so that exact spot lands centre-frame. The meme circle-and-zoom, in two clicks.
+      </p>
+      <SliderRow label="Zoom" value={zoom} min={10} max={200} step={5} unit="%" defaultValue={70} onChange={setZoom} />
+      <SliderRow label="Whip time" value={Math.round(ramp * 100)} min={8} max={120} step={2} unit="cs" defaultValue={35} onChange={(v) => setRamp(v / 100)} />
+      <Btn
+        variant={armed ? "primary" : "default"}
+        className={armed ? "w-full bg-red-500 hover:bg-red-400" : "w-full"}
+        onClick={() => arm(!armed, { zoom, ramp })}
+      >
+        <Crosshair size={12} /> {armed ? "Click a spot in the preview…" : "Arm pick, then click preview"}
       </Btn>
     </Section>
   );

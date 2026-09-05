@@ -309,7 +309,7 @@ export function defaultTextStyle(): TextStyle {
 
 // ── Solids / shapes ─────────────────────────────────────────────────────────
 
-export type SolidShape = "rectangle" | "ellipse";
+export type SolidShape = "rectangle" | "ellipse" | "arrow";
 
 export interface SolidStyle {
   color: string;
