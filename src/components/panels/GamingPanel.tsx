@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useEditorStore } from "../../store/useEditorStore";
 import { Btn, ColorField, Kbd, Row, Section, Segmented, SliderRow, Toggle } from "../ui/controls";
 import { FACECAM_PRESETS, FacecamPresetId, ZoomCutMode } from "../../lib/gaming";
@@ -8,7 +9,9 @@ import { Zap, ZoomIn, Rewind, Clapperboard, Video, Type, Volume2, EyeOff, Play, 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 function useVideoSelection() {
-  return useEditorStore((s) => s.selectedClipIds.filter((id) => s.tracks.some((t) => t.type === "video" && t.clips.some((c) => c.id === id))));
+  return useEditorStore(
+    useShallow((s) => s.selectedClipIds.filter((id) => s.tracks.some((t) => t.type === "video" && t.clips.some((c) => c.id === id))))
+  );
 }
 
 /** Makes sure an SFX asset exists in the media bin and returns its id. */
